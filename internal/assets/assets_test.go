@@ -30,8 +30,13 @@ func TestExtractFlattensAndIsSafe(t *testing.T) {
 	f.Close()
 
 	dir := filepath.Join(t.TempDir(), "out")
-	if err := Extract(zp, dir); err != nil {
+	var lastDone, lastTotal int64
+	if err := Extract(zp, dir, func(d, t int64) { lastDone, lastTotal = d, t }); err != nil {
 		t.Fatal(err)
+	}
+	if lastDone != lastTotal || lastTotal != int64(len("<root/>")+len("FLV")+len("nope")) {
+		t.Errorf("progress final = (%d, %d), want total %d", lastDone, lastTotal,
+			int64(len("<root/>")+len("FLV")+len("nope")))
 	}
 	for _, n := range []string{"mainstream.xml", "x.flv", "evil.txt"} {
 		if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
@@ -47,7 +52,7 @@ func TestExtractFlattensAndIsSafe(t *testing.T) {
 func TestExtractRejectsJunk(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "junk.zip")
 	os.WriteFile(p, []byte("<html>login</html>"), 0o644)
-	if err := Extract(p, t.TempDir()); err == nil {
+	if err := Extract(p, t.TempDir(), nil); err == nil {
 		t.Fatal("junk file should not extract")
 	}
 }

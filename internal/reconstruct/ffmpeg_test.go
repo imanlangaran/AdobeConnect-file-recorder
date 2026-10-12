@@ -199,6 +199,7 @@ func TestArgsLayoutComposition(t *testing.T) {
 		3000, 960, 720, 25, "av", true)
 	sp.layout = true
 	sp.assPath = "/raw/layout.ass"
+	sp.chatBoxY, sp.chatBoxH = 0, 720 // newPanel(0, canvasH, …): box == video rect
 	sp.canvasSrc = []string{"-f", "lavfi", "-i", "color=c=0x1b2838:s=1280x720:r=25:d=3.000"}
 	args, err := sp.args(Options{Preset: "veryfast", CRF: 23, Out: "o.mp4"})
 	if err != nil {
@@ -207,7 +208,7 @@ func TestArgsLayoutComposition(t *testing.T) {
 	all := strings.Join(args, " ")
 	for _, want := range []string{
 		"color=c=0x1b2838:s=1280x720", // canvas input
-		"[0:v]drawbox=x=966:y=274:w=310:h=436:color=0x5A6E82:t=1[vbg];[vbg][v0]overlay=0:0", // box, then content        // content composited over canvas
+		"[0:v]drawbox=x=966:y=0:w=310:h=720:color=0x5A6E82:t=1[vbg];[vbg][v0]overlay=0:0", // box, then content        // content composited over canvas
 		"subtitles=filename='/raw/layout.ass'",
 		"-map [vout]",
 		"scale=960:720", // content box left of 320px sidebar

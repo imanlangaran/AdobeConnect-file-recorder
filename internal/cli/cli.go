@@ -337,13 +337,13 @@ func newProgress(w io.Writer) func(stage string, done, total int64) {
 		}
 		last = time.Now()
 		lastStage = stage
-		if stage == "download" { // bytes
+		if stage == "download" || stage == "extract" { // bytes
 			if total > 0 {
-				fmt.Fprintf(w, "\r\033[Kdownload %5.1f%% (%.1f / %.1f MB)",
+				fmt.Fprintf(w, "\r\033[K%s %5.1f%% (%.1f / %.1f MB)", stage,
 					float64(done)/float64(total)*100,
 					float64(done)/(1<<20), float64(total)/(1<<20))
 			} else {
-				fmt.Fprintf(w, "\r\033[Kdownload %.1f MB", float64(done)/(1<<20))
+				fmt.Fprintf(w, "\r\033[K%s %.1f MB", stage, float64(done)/(1<<20))
 			}
 			return
 		}

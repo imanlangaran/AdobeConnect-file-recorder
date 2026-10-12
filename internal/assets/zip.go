@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Limits guard against zip bombs and path traversal.
@@ -25,8 +26,9 @@ var ErrBadArchive = errors.New("not a valid recording archive")
 
 // Extract unpacks src ZIP into dir. Members are placed flat (recording
 // archives use no meaningful directory structure); path traversal and
-// decompression bombs are rejected.
-func Extract(src, dir string) error {
+// decompression bombs are rejected. progress (optional, may be nil) is
+// called with (done, total) uncompressed bytes, throttled to ~10/s.
+func Extract(src, dir string, progress func(done, total int64)) error {
 	zr, err := zip.OpenReader(src)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrBadArchive, err)
@@ -50,6 +52,7 @@ func Extract(src, dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	cr := &countReader{total: totalUncompressed, fn: progress}
 	for _, f := range zr.File {
 		name := filepath.Base(filepath.FromSlash(f.Name))
 		if name == "." || name == string(filepath.Separator) || name == "" {
@@ -62,14 +65,39 @@ func Extract(src, dir string) error {
 		if f.FileInfo().IsDir() {
 			continue
 		}
-		if err := extractFile(f, dst); err != nil {
+		if err := extractFile(f, dst, cr); err != nil {
 			return err
 		}
+	}
+	if progress != nil {
+		progress(totalUncompressed, totalUncompressed)
 	}
 	return nil
 }
 
-func extractFile(f *zip.File, dst string) error {
+// countReader counts bytes through it and reports throttled progress (~10/s).
+// One instance is reused across archive members so `done` accumulates.
+type countReader struct {
+	r     io.Reader
+	done  int64
+	total int64
+	fn    func(done, total int64)
+	last  time.Time
+}
+
+func (c *countReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	if n > 0 {
+		c.done += int64(n)
+		if c.fn != nil && time.Since(c.last) > 100*time.Millisecond {
+			c.last = time.Now()
+			c.fn(c.done, c.total)
+		}
+	}
+	return n, err
+}
+
+func extractFile(f *zip.File, dst string, cr *countReader) error {
 	rc, err := f.Open()
 	if err != nil {
 		return err
@@ -81,7 +109,8 @@ func extractFile(f *zip.File, dst string) error {
 	}
 	defer out.Close()
 	// Limit each member to the bomb cap so a single huge file cannot fill the disk.
-	_, err = io.Copy(out, io.LimitReader(rc, maxTotalBytes))
+	cr.r = io.LimitReader(rc, maxTotalBytes)
+	_, err = io.Copy(out, cr)
 	return err
 }
 

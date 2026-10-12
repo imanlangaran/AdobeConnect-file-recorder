@@ -29,7 +29,7 @@ func TestBuildASS(t *testing.T) {
 		{TimeMs: 5500, From: "Carol", Text: "quick"},
 		{TimeMs: 99999999, From: "Late", Text: "beyond end"}, // out of range → skipped
 	}
-	ass := BuildASS(chat, []string{"Alice", "Bob"}, 10000)
+	ass := BuildASS(chat, []string{"Alice", "Bob"}, 10000, newPanel(0, canvasH, 2))
 
 	if !strings.Contains(ass, "PlayResX: 1280") || !strings.Contains(ass, "PlayResY: 720") {
 		t.Error("missing canvas resolution")
@@ -80,7 +80,7 @@ func TestBuildASSHistoryCap(t *testing.T) {
 			TimeMs: int64(i+1) * 1000, From: "User", Text: strings.Repeat("x", 120),
 		})
 	}
-	ass := BuildASS(chat, nil, 60000)
+	ass := BuildASS(chat, nil, 60000, newPanel(0, canvasH, 0))
 	if !strings.Contains(ass, ",0:01:00.00,Chat,,") {
 		t.Error("last history block must run until the end of the recording")
 	}
@@ -96,8 +96,62 @@ func TestBuildASSHistoryCap(t *testing.T) {
 }
 
 func TestBuildASSEmpty(t *testing.T) {
-	ass := BuildASS(nil, nil, 1000)
+	ass := BuildASS(nil, nil, 1000, newPanel(0, canvasH, 0))
 	if strings.Contains(ass, "Dialogue:") {
 		t.Error("no data → no dialogue lines")
+	}
+}
+
+func TestFitRect(t *testing.T) {
+	// mirrors ffmpeg scale=960:720:force_original_aspect_ratio=decrease + pad
+	cases := []struct{ sw, sh, top, h int }{
+		{1920, 1088, 88, 544},  // 16:9 screenshare → letterboxed
+		{1024, 768, 0, 720},    // 4:3 → fills the box
+		{720, 1280, 0, 720},    // portrait → height-limited
+		{2560, 1080, 157, 405}, // 21:9
+	}
+	for _, c := range cases {
+		top, h := fitRect(c.sw, c.sh, 960, 720)
+		if top != c.top || h != c.h {
+			t.Errorf("fitRect(%d,%d) = (%d,%d), want (%d,%d)", c.sw, c.sh, top, h, c.top, c.h)
+		}
+	}
+}
+
+func TestNewPanel(t *testing.T) {
+	// full-height content: box = whole canvas, chat capped at 19 lines
+	full := newPanel(0, canvasH, 14)
+	if full.attMarginV != 12 || full.boxY != 0 || full.boxH != 720 ||
+		full.chatMarginV != 274 || full.maxLines != 19 || full.show != 14 || full.trunc {
+		t.Errorf("full-height panel = %+v", full)
+	}
+	// letterboxed 16:9 video (rows 88..631): box height == video height
+	const vTop, vH = 88, 544
+	lp := newPanel(vTop, vH, 14)
+	if lp.attMarginV != 100 || lp.boxY != vTop || lp.boxH != vH ||
+		lp.chatMarginV != 362 || lp.maxLines != 14 || lp.show != 14 || lp.trunc {
+		t.Errorf("letterboxed panel = %+v", lp)
+	}
+	// attendee block must end exactly attGap above the chat text (libass
+	// would shift the chat event out of the box otherwise)
+	if attEnd := lp.attMarginV + (1+lp.show)*attPitch; attEnd+attGap != lp.chatMarginV {
+		t.Errorf("attendee block (ends %d) does not meet the chat (y=%d)", attEnd, lp.chatMarginV)
+	}
+	// full history must stay inside the box
+	if bottom := lp.chatMarginV + glyphTop + (lp.maxLines-1)*chatPitch + glyphDepth; bottom > lp.boxY+lp.boxH-1-botSlack {
+		t.Errorf("chat (ends %d) escapes the box (bottom %d)", bottom, lp.boxY+lp.boxH-1)
+	}
+	// many attendees: box always equals the rect, chat keeps a usable depth
+	for _, tc := range []struct{ vTop, vH, n int }{
+		{0, canvasH, 40}, {88, 544, 40}, {0, canvasH, 300},
+	} {
+		p := newPanel(tc.vTop, tc.vH, tc.n)
+		if p.boxY != tc.vTop || p.boxH != tc.vH {
+			t.Errorf("newPanel(%d,%d,%d) box = %d..%d, want the video rect",
+				tc.vTop, tc.vH, tc.n, p.boxY, p.boxY+p.boxH-1)
+		}
+		if p.maxLines < minBoxLines || p.maxLines > maxChatLines {
+			t.Errorf("newPanel(%d,%d,%d) maxLines = %d", tc.vTop, tc.vH, tc.n, p.maxLines)
+		}
 	}
 }

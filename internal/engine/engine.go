@@ -127,7 +127,11 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 
 	status("extracting archive")
 	rawDir := filepath.Join(work, "raw")
-	if err := assets.Extract(zipPath, rawDir); err != nil {
+	if err := assets.Extract(zipPath, rawDir, func(d, t int64) {
+		if opt.Progress != nil {
+			opt.Progress("extract", d, t)
+		}
+	}); err != nil {
 		return rep, err
 	}
 

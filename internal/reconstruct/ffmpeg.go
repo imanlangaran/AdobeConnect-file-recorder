@@ -57,9 +57,11 @@ const (
 	segmentOverhead = 2 * time.Second // safety per-segment read slack
 	// chat history bounding box on the sidebar (drawn on the canvas — NOT an
 	// ASS event: libass collision-avoidance shifts text events overlapping a
-	// \p1 drawing, which pushed the chat out of the box)
-	chatBoxX, chatBoxY = 966, 274
-	chatBoxW, chatBoxH = 310, 436
+	// \p1 drawing, which pushed the chat out of the box). Y/H come from the
+	// panel geometry (ass.go): the box spans the recorded video's rect, so
+	// its height always matches the video.
+	chatBoxX = 966
+	chatBoxW = 310
 )
 
 // Run reconstructs the recording. It is cancellable via ctx.
@@ -114,9 +116,11 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	}
 
 	width, height := fallbackWidth, fallbackHeight
+	srcW, srcH := 0, 0 // probed source size (0 = unknown → full-height panel)
 	if mode != "audio-only" {
 		if w, h, err := probeSize(ctx, opt.FFprobePath, filepath.Join(opt.Dir, vidSegs[0].FileName())); err == nil {
 			width, height = w, h
+			srcW, srcH = w, h
 		}
 	}
 	if width%2 != 0 {
@@ -130,15 +134,22 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	}
 
 	// Layout composition: 1280x720 canvas, content box left, sidebar with
-	// burned-in attendee list + chat replay on the right.
+	// burned-in attendee list + chat replay on the right. The sidebar box
+	// spans the recorded video's letterboxed rect — same height as the
+	// video itself.
 	layout := !opt.Raw && mode != "audio-only"
-	assPath := ""
+	assPath, p := "", panel{}
 	if layout {
 		vw, vh := contentBox()
 		width, height = vw, vh
+		vTop, vH := 0, vh
+		if srcW > 0 && srcH > 0 {
+			vTop, vH = fitRect(srcW, srcH, vw, vh)
+		}
+		p = newPanel(vTop, vH, len(opt.Attendees))
 		if len(opt.Chat) > 0 || len(opt.Attendees) > 0 {
 			assPath = filepath.Join(opt.Dir, "layout.ass")
-			if err := os.WriteFile(assPath, []byte(BuildASS(opt.Chat, opt.Attendees, totalMs)), 0o644); err != nil {
+			if err := os.WriteFile(assPath, []byte(BuildASS(opt.Chat, opt.Attendees, totalMs, p)), 0o644); err != nil {
 				return Result{}, fmt.Errorf("write subtitles: %w", err)
 			}
 		}
@@ -147,6 +158,7 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	spec := buildSpec(opt.Dir, vidSegs, audSegs, totalMs, width, height, opt.FPS, mode, layout)
 	spec.layout = layout
 	spec.assPath = assPath
+	spec.chatBoxY, spec.chatBoxH = p.boxY, p.boxH
 	if layout && opt.Width > 0 && (opt.Width != canvasW || opt.Height != canvasH) {
 		spec.outW, spec.outH = opt.Width, opt.Height // downscale composed canvas
 	}
@@ -191,6 +203,8 @@ type spec struct {
 	canvasSrc   []string // lavfi canvas input (placed as input 0)
 	assPath     string   // burned-in subtitles file ("" = none)
 	outW, outH  int      // output resolution override for layout mode (0 = canvas)
+	chatBoxY    int      // chat history box top (panel geometry)
+	chatBoxH    int      // chat history box height
 	inputOffset int      // input index of the first node (1 when canvas present)
 }
 
@@ -307,7 +321,7 @@ func (s *spec) args(opt Options) ([]string, error) {
 	if s.layout && videoOut != "" {
 		inner := strings.Trim(videoOut, "[]")
 		fc.WriteString(fmt.Sprintf("[0:v]drawbox=x=%d:y=%d:w=%d:h=%d:color=0x5A6E82:t=1[vbg];",
-			chatBoxX, chatBoxY, chatBoxW, chatBoxH))
+			chatBoxX, s.chatBoxY, chatBoxW, s.chatBoxH))
 		if s.assPath != "" {
 			fc.WriteString(fmt.Sprintf("[vbg][%s]overlay=0:0[voc];[voc]subtitles=filename='%s'[vout];",
 				inner, s.assPath))

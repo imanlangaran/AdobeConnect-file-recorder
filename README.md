@@ -7,7 +7,9 @@ rendition** — into a single MP4 with embedded audio, plus sidecar files.
 The default output is a **1280×720 video approximating the presented layout**:
 the shared content on the left, with the attendee list and a rolling chat
 history (time-synced, stays visible in a bounded box) burned into a 320px
-sidebar on the right.
+sidebar on the right. The sidebar box spans the height of the recorded video
+itself (letterboxed content), so its border sits exactly on the video's
+top/bottom edge.
 
 Plan & research: [`docs/ADOBE_CONNECT_OFFLINE_RECORDING_PLAN.md`](docs/ADOBE_CONNECT_OFFLINE_RECORDING_PLAN.md)
 
@@ -39,7 +41,8 @@ bin/ac-rec reconstruct ~/Downloads/p15rdeovw4ge.zip
 Get the session cookie: log in with your browser → DevTools → Network →
 any request → Request Headers → `Cookie: BREEZESESSION=…`. Pass it via
 `--session`, or add arbitrary cookies with `--cookie Name=Value` (repeatable).
-Alternatively put credentials in a `.env` file in the current directory:
+Alternatively put credentials in a `.env` file in the current directory
+(copy [`.env.example`](.env.example)):
 
 ```sh
 AC_USERNAME=you@example.com

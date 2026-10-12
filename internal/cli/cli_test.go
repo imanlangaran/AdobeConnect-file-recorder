@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,5 +68,17 @@ func TestReadEnvFile(t *testing.T) {
 	os.WriteFile(path, []byte("UNRELATED=1\n"), 0o600)
 	if _, _, err = readEnvFile(path); err == nil {
 		t.Error("missing credentials must be an error")
+	}
+}
+
+func TestNewProgressLabels(t *testing.T) {
+	// the printed stage name must come from the callback, not be hardcoded
+	for _, stage := range []string{"download", "extract", "reconstruct"} {
+		var buf bytes.Buffer
+		p := newProgress(&buf)
+		p(stage, 100, 200)
+		if !strings.Contains(buf.String(), stage+" ") {
+			t.Errorf("progress for stage %q printed %q", stage, buf.String())
+		}
 	}
 }
