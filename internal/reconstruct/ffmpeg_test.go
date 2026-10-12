@@ -207,7 +207,7 @@ func TestArgsLayoutComposition(t *testing.T) {
 	all := strings.Join(args, " ")
 	for _, want := range []string{
 		"color=c=0x1b2838:s=1280x720", // canvas input
-		"[0:v][v0]overlay=0:0",        // content composited over canvas
+		"[0:v]drawbox=x=966:y=274:w=310:h=436:color=0x5A6E82:t=1[vbg];[vbg][v0]overlay=0:0", // box, then content        // content composited over canvas
 		"subtitles=filename='/raw/layout.ass'",
 		"-map [vout]",
 		"scale=960:720", // content box left of 320px sidebar
@@ -221,5 +221,33 @@ func TestArgsLayoutComposition(t *testing.T) {
 	si := strings.Index(all, "/raw/s.flv")
 	if ci < 0 || si < 0 || ci > si {
 		t.Errorf("canvas input must precede segments (canvas=%d seg=%d)", ci, si)
+	}
+}
+
+func TestArgsLayoutScaleTail(t *testing.T) {
+	// --resolution 480p: layout composes at 1280x720, then scales once at the end
+	sp := buildSpec("/raw",
+		[]timeline.Segment{seg("screenshare", "s", 0, 3000)},
+		[]timeline.Segment{seg("cameraVoip", "c", 0, 3000)},
+		3000, 960, 720, 25, "av", true)
+	sp.layout = true
+	sp.assPath = "/raw/layout.ass"
+	sp.canvasSrc = []string{"-f", "lavfi", "-i", "color=c=0x1b2838:s=1280x720:r=25:d=3.000"}
+	sp.outW, sp.outH = 854, 480
+	args, err := sp.args(Options{Preset: "veryfast", CRF: 23, Out: "o.mp4"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(args, " ")
+	for _, want := range []string{
+		"[vout]scale=854:480[vsc]", // downscale after overlay+subtitles
+		"-map [vsc]",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("scale tail missing %q\nargs: %s", want, all)
+		}
+	}
+	if strings.Contains(all, "-map [vout]") {
+		t.Errorf("must encode the scaled stream, not the pre-scale one: %s", all)
 	}
 }

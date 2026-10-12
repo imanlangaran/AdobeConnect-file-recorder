@@ -29,8 +29,12 @@ type Options struct {
 	Title     string         // output folder name (default: archive stem)
 	OutDir    string         // parent output directory (default: cwd)
 	Overwrite bool
-	Raw       bool // full-frame output instead of 720p layout composition
-	MP3       bool // also export recording.mp3
+	Raw       bool   // full-frame output instead of 720p layout composition
+	MP3       bool   // also export recording.mp3
+	Width     int    // output resolution width (0 = 1280x720 default)
+	Height    int    // output resolution height (0 = 1280x720 default)
+	Username  string // .env credentials: logged in via /api/xml before download
+	Password  string
 	Status    func(string)
 	Progress  func(stage string, done, total int64)
 }
@@ -75,12 +79,21 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 
 	zipPath := opt.ZipPath
 	if zipPath == "" {
+		cookies := opt.Cookies
+		if opt.Username != "" {
+			status("logging in")
+			cs, err := download.Login(ctx, &http.Client{}, originOf(opt.ZipURL), opt.Username, opt.Password)
+			if err != nil {
+				return rep, err
+			}
+			cookies = append(cookies, cs...)
+		}
 		status("downloading archive")
 		zipPath = filepath.Join(work, "recording.zip")
 		if err := download.File(ctx, &http.Client{}, opt.ZipURL, zipPath,
 			download.Options{
 				Session:  opt.Session,
-				Cookies:  opt.Cookies,
+				Cookies:  cookies,
 				Referer:  refererOf(opt.ZipURL),
 				Validate: download.ValidateZIP,
 				Progress: func(d, t int64) {
@@ -147,6 +160,8 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 		Out:       outVideo,
 		Overwrite: true,
 		Raw:       opt.Raw,
+		Width:     opt.Width,
+		Height:    opt.Height,
 		Chat:      chat,
 		Attendees: attendees,
 		Status:    status,
@@ -301,6 +316,17 @@ func refererOf(zipURL string) string {
 	// https://host/id/output/x.zip?… → https://host/id/
 	if i := strings.Index(zipURL, "/output/"); i > 0 {
 		return zipURL[:i] + "/"
+	}
+	return zipURL
+}
+
+func originOf(zipURL string) string {
+	// https://host/id/output/x.zip?… → https://host
+	if i := strings.Index(zipURL, "://"); i > 0 {
+		rest := zipURL[i+3:]
+		if j := strings.Index(rest, "/"); j > 0 {
+			return zipURL[:i+3+j]
+		}
 	}
 	return zipURL
 }

@@ -3,6 +3,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -31,10 +32,15 @@ Flags:
   --name <title>      output folder name (default: recording page title / zip name)
   --overwrite         replace existing output
   --mp3               also export recording.mp3 (audio only)
-  --raw               full-frame video at source resolution (skip 720p layout)
+  --resolution <p>    output resolution: 480p | 720p | 1080p (default 720p)
+  --raw               full-frame video at source resolution (skip layout)
+
+Download auth: --session <tok> / --cookie, or a .env file in the current
+directory with AC_USERNAME=… and AC_PASSWORD=… (or USERNAME=… / PASSWORD=…);
+with .env the login is handled automatically before downloading.
 
 Default output is a 1280x720 video approximating the presented layout:
-content on the left, attendee list + chat replay burned into a right sidebar.
+content on the left, attendee list + chat history burned into a right sidebar.
 
 Get a session token: log in via browser → DevTools → Network → any request →
 Request Headers → Cookie: BREEZESESSION=…
@@ -61,13 +67,14 @@ func Main(args []string) int {
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	var (
-		session   = fs.String("session", "", "BREEZESESSION cookie value")
-		outDir    = fs.String("out", "", "output parent directory")
-		name      = fs.String("name", "", "output folder name")
-		overwrite = fs.Bool("overwrite", false, "replace existing output")
-		raw       = fs.Bool("raw", false, "full-frame video at source resolution (skip 720p layout)")
-		mp3       = fs.Bool("mp3", false, "also export recording.mp3")
-		cookies   = cookieList{}
+		session    = fs.String("session", "", "BREEZESESSION cookie value")
+		outDir     = fs.String("out", "", "output parent directory")
+		name       = fs.String("name", "", "output folder name")
+		overwrite  = fs.Bool("overwrite", false, "replace existing output")
+		raw        = fs.Bool("raw", false, "full-frame video at source resolution (skip layout)")
+		mp3        = fs.Bool("mp3", false, "also export recording.mp3")
+		resolution = fs.String("resolution", "720p", "output resolution: 480p, 720p, 1080p")
+		cookies    = cookieList{}
 	)
 	fs.Var(&cookies, "cookie", "extra cookie as NAME=VALUE (repeatable)")
 	// allow flags before AND after the positional argument
@@ -89,6 +96,21 @@ func Main(args []string) int {
 	}
 	target := positional[0]
 
+	resv, err := parseResolution(*resolution)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: --resolution: %v\n", err)
+		return 2
+	}
+
+	envUser, envPass := "", ""
+	if cmd == "download" && *session == "" {
+		var err error
+		if envUser, envPass, err = readEnvFile(".env"); err != nil {
+			fmt.Fprintf(os.Stderr, "error: .env: %v\n", err)
+			return 2
+		}
+	}
+
 	if !engine.HasFFmpeg() {
 		fmt.Fprintln(os.Stderr, "error: ffmpeg and ffprobe must be installed and on PATH")
 		return 1
@@ -105,6 +127,10 @@ func Main(args []string) int {
 		Overwrite: *overwrite,
 		Raw:       *raw,
 		MP3:       *mp3,
+		Width:     resv.w,
+		Height:    resv.h,
+		Username:  envUser,
+		Password:  envPass,
 		Status:    func(s string) { fmt.Fprintf(os.Stderr, "\r\033[K%s\n", s) },
 		Progress:  newProgress(os.Stderr),
 	}
@@ -139,7 +165,7 @@ func Main(args []string) int {
 	fmt.Printf("\nDone\n")
 	kind := "video"
 	if rep.Layout {
-		kind = "video (720p layout)"
+		kind = "video (layout)"
 	}
 	fmt.Printf("  %s:     %s (%s, %s)\n", kind, rep.VideoPath, fmtDur(rep.DurationMs), rep.Mode)
 	if rep.MP3Path != "" {
@@ -158,6 +184,73 @@ func Main(args []string) int {
 }
 
 // ---- helpers -------------------------------------------------------------
+
+// resOption is one accepted --resolution value (width/height both even for
+// yuv420p).
+type resOption struct {
+	name string
+	w, h int
+}
+
+var resOptions = []resOption{
+	{"480p", 854, 480},
+	{"720p", 1280, 720},
+	{"1080p", 1920, 1080},
+}
+
+func parseResolution(s string) (resOption, error) {
+	for _, r := range resOptions {
+		if r.name == s {
+			return r, nil
+		}
+	}
+	names := make([]string, len(resOptions))
+	for i, r := range resOptions {
+		names[i] = r.name
+	}
+	return resOption{}, fmt.Errorf("unknown resolution %q, want one of: %s", s, strings.Join(names, ", "))
+}
+
+// readEnvFile reads credentials from a simple KEY=VALUE .env file.
+// No file → no error (session/cookie auth is used instead).
+func readEnvFile(path string) (user, pass string, _ error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", "", nil
+		}
+		return "", "", err
+	}
+	vals := map[string]string{}
+	for _, ln := range strings.Split(string(b), "\n") {
+		ln = strings.TrimSpace(ln)
+		if ln == "" || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(ln, "=")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(k), "export "))
+		v = strings.Trim(strings.TrimSpace(v), `"'`)
+		vals[k] = v
+	}
+	get := func(keys ...string) string {
+		for _, k := range keys {
+			if vals[k] != "" {
+				return vals[k]
+			}
+		}
+		return ""
+	}
+	if user = get("AC_USERNAME", "USERNAME"); user == "" {
+		return "", "", fmt.Errorf("missing AC_USERNAME (or USERNAME) in %s", path)
+	}
+	if pass = get("AC_PASSWORD", "PASSWORD"); pass == "" {
+		return "", "", fmt.Errorf("missing AC_PASSWORD (or PASSWORD) in %s", path)
+	}
+	return user, pass, nil
+}
 
 type cookieList []string
 

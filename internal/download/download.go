@@ -3,11 +3,13 @@
 package download
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -16,8 +18,13 @@ import (
 // ErrAuth indicates the server rejected the session (401/403 or login page).
 var ErrAuth = errors.New("authentication rejected (session cookie missing or expired)")
 
+// ErrLogin indicates the credential login was refused by the server.
+var ErrLogin = errors.New("login rejected (check username/password in .env)")
+
 // ErrNoContent indicates an empty/invalid response body (e.g. HTML error page).
 var ErrNoContent = errors.New("server returned no content (HTML page instead of archive?)")
+
+const defaultUA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
 // Options control a download.
 type Options struct {
@@ -39,8 +46,38 @@ func (o *Options) withDefaults() {
 		o.Attempts = 3
 	}
 	if o.UserAgent == "" {
-		o.UserAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+		o.UserAgent = defaultUA
 	}
+}
+
+// Login authenticates against the Adobe Connect API
+// (GET /api/xml?action=login) and returns the session cookies
+// (BreezeLoginCookie/BREEZESESSION) set by a successful login.
+func Login(ctx context.Context, client *http.Client, origin, username, password string) ([]*http.Cookie, error) {
+	u := fmt.Sprintf("%s/api/xml?action=login&username=%s&password=%s",
+		strings.TrimRight(origin, "/"),
+		url.QueryEscape(username), url.QueryEscape(password))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", defaultUA)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("login: HTTP %d", resp.StatusCode)
+	}
+	if !bytes.Contains(body, []byte("<login-ok")) {
+		return nil, ErrLogin
+	}
+	return resp.Cookies(), nil
 }
 
 // File downloads url to dest (via dest+".part"), validating and renaming on success.

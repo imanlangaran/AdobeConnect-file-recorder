@@ -138,3 +138,46 @@ func TestValidateZIPVariants(t *testing.T) {
 		}
 	}
 }
+
+func TestLoginOK(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		http.SetCookie(w, &http.Cookie{Name: "BreezeLoginCookie", Value: "blc", Path: "/"})
+		http.SetCookie(w, &http.Cookie{Name: "BREEZESESSION", Value: "sess1", Path: "/"})
+		w.Write([]byte("<results><login-ok><user><name>u</name></user></login-ok></results>"))
+	}))
+	defer srv.Close()
+
+	cookies, err := Login(context.Background(), srv.Client(), srv.URL, "user name", "p&ss")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gotQuery, "action=login") ||
+		!strings.Contains(gotQuery, "username=user+name") ||
+		!strings.Contains(gotQuery, "password=p%26ss") {
+		t.Errorf("login query wrong: %q", gotQuery)
+	}
+	got := map[string]string{}
+	for _, c := range cookies {
+		got[c.Name] = c.Value
+	}
+	if got["BreezeLoginCookie"] != "blc" || got["BREEZESESSION"] != "sess1" {
+		t.Errorf("cookies = %v", got)
+	}
+}
+
+func TestLoginRejected(t *testing.T) {
+	for name, body := range map[string]string{
+		"login-failed": "<results><login-failed status=\"denied\"/></results>",
+		"html-page":    "<!DOCTYPE html><html><body>login</body></html>",
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte(body))
+		}))
+		if _, err := Login(context.Background(), srv.Client(), srv.URL, "u", "bad"); !errors.Is(err, ErrLogin) {
+			t.Errorf("%s: err = %v, want ErrLogin", name, err)
+		}
+		srv.Close()
+	}
+}

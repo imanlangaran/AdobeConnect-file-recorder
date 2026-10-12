@@ -11,20 +11,23 @@ import (
 // 320px sidebar on the right hosting the attendee list + chat replay —
 // approximating the presented Adobe Connect layout.
 const (
-	canvasW    = 1280
-	canvasH    = 720
-	sidebarW   = 320
-	chatStayMs = 25000 // max visibility per chat message
-	maxNames   = 40
-	maxChatLen = 600
+	canvasW  = 1280
+	canvasH  = 720
+	sidebarW = 320
+	maxNames = 40
+	// chat history box: text top = Chat style MarginV (280), bottom inset 10px
+	chatCols     = 30 // ~chars per wrapped line at 18px in the 302px-wide box
+	maxMsgLines  = 2  // per-message cap: one long message must not eat the box
+	maxChatLines = 19 // rolling history depth (lines that fit the box)
 )
 
 // contentBox returns the width/height of the main content area (left of sidebar).
 func contentBox() (int, int) { return canvasW - sidebarW, canvasH }
 
-// BuildASS renders chat replay + attendee list as an ASS subtitle script.
-// Sidebar: attendees pinned top; chat messages appear at their timestamp
-// (one at a time, up to chatStayMs or until the next message).
+// BuildASS renders the attendee list + rolling chat history as an ASS script.
+// Sidebar: attendees pinned top; at each chat message the box shows the most
+// recent messages that fit — the last block stays until the end of the
+// recording, so history never disappears.
 func BuildASS(chat []assets.ChatMessage, attendees []string, totalMs int64) string {
 	var b strings.Builder
 	b.WriteString("[Script Info]\nScriptType: v4.00+\n")
@@ -47,29 +50,50 @@ func BuildASS(chat []assets.ChatMessage, attendees []string, totalMs int64) stri
 			assTime(0), assTime(totalMs), text)
 	}
 
-	for i, m := range chat {
-		start := m.TimeMs
-		if start < 0 || start >= totalMs {
-			continue
+	// keep only messages that fall inside the timeline
+	var msgs []assets.ChatMessage
+	for _, m := range chat {
+		if m.TimeMs >= 0 && m.TimeMs < totalMs {
+			msgs = append(msgs, m)
 		}
-		end := start + chatStayMs
-		if i+1 < len(chat) && chat[i+1].TimeMs > start && chat[i+1].TimeMs < end {
-			end = chat[i+1].TimeMs // hand over to the next message, never overlap
-		}
-		if end > totalMs {
-			end = totalMs
+	}
+
+	for i := range msgs {
+		start := msgs[i].TimeMs
+		end := totalMs
+		if i+1 < len(msgs) {
+			end = msgs[i+1].TimeMs
 		}
 		if end <= start {
 			continue
 		}
-		text := assEscape(m.From + ": " + m.Text)
-		if len([]rune(text)) > maxChatLen {
-			text = string([]rune(text)[:maxChatLen]) + "…"
+		// rolling history: accumulate newest → oldest until the box is full;
+		// the block lives until the next message (last block: until the end)
+		var lines []string
+		used := 0
+		for j := i; j >= 0; j-- {
+			t := chatLine(msgs[j])
+			n := (len([]rune(t)) + chatCols - 1) / chatCols
+			if used+n > maxChatLines {
+				break
+			}
+			used += n
+			lines = append([]string{t}, lines...)
 		}
 		fmt.Fprintf(&b, "Dialogue: 0,%s,%s,Chat,,0,0,0,%s\n",
-			assTime(start), assTime(end), text)
+			assTime(start), assTime(end), strings.Join(lines, `\N`))
 	}
 	return b.String()
+}
+
+// chatLine renders one message, capped at maxMsgLines so a single long
+// message cannot consume the whole history box.
+func chatLine(m assets.ChatMessage) string {
+	t := assEscape(m.From + ": " + m.Text)
+	if r := []rune(t); len(r) > maxMsgLines*chatCols {
+		t = string(r[:maxMsgLines*chatCols]) + "…"
+	}
+	return t
 }
 
 // assTime formats ms as H:MM:SS.cc (ASS timestamp).

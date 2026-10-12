@@ -5,8 +5,9 @@ recordings — the old recordings that have **no download button and no MP4
 rendition** — into a single MP4 with embedded audio, plus sidecar files.
 
 The default output is a **1280×720 video approximating the presented layout**:
-the shared content on the left, with the attendee list and a chat replay
-(time-synced messages) burned into a 320px sidebar on the right.
+the shared content on the left, with the attendee list and a rolling chat
+history (time-synced, stays visible in a bounded box) burned into a 320px
+sidebar on the right.
 
 Plan & research: [`docs/ADOBE_CONNECT_OFFLINE_RECORDING_PLAN.md`](docs/ADOBE_CONNECT_OFFLINE_RECORDING_PLAN.md)
 
@@ -28,6 +29,9 @@ go test ./...
 # Full pipeline: download archive + reconstruct
 bin/ac-rec download 'https://webinar5.um.ac.ir/p15rdeovw4ge/' --session '<BREEZESESSION>'
 
+# Same, logging in with credentials from a .env file (no --session needed)
+bin/ac-rec download 'https://webinar5.um.ac.ir/p15rdeovw4ge/'
+
 # Offline: reconstruct from an already-downloaded ZIP
 bin/ac-rec reconstruct ~/Downloads/p15rdeovw4ge.zip
 ```
@@ -35,6 +39,16 @@ bin/ac-rec reconstruct ~/Downloads/p15rdeovw4ge.zip
 Get the session cookie: log in with your browser → DevTools → Network →
 any request → Request Headers → `Cookie: BREEZESESSION=…`. Pass it via
 `--session`, or add arbitrary cookies with `--cookie Name=Value` (repeatable).
+Alternatively put credentials in a `.env` file in the current directory:
+
+```sh
+AC_USERNAME=you@example.com
+AC_PASSWORD=secret
+```
+
+(`USERNAME=`/`PASSWORD=` work too; the file is gitignored.) When `--session`
+is absent and `.env` exists, the download logs in via `/api/xml?action=login`
+and uses the returned session cookies automatically.
 
 Output lands in `./recordings/<recording-title>/`:
 
@@ -47,7 +61,8 @@ Output lands in `./recordings/<recording-title>/`:
 | `metadata.json` | duration, segment counts, warnings |
 
 Flags: `--raw` restores the old full-frame output at source resolution;
-`--mp3` adds the MP3 export; `--name`/`--out`/`--overwrite`/`--session`/
+`--mp3` adds the MP3 export; `--resolution 480p|720p|1080p` lowers/raises the
+output resolution (default 720p); `--name`/`--out`/`--overwrite`/`--session`/
 `--cookie` as shown by `ac-rec help`.
 
 ## How it works
@@ -56,13 +71,14 @@ Flags: `--raw` restores the old full-frame output at source resolution;
 2. Download with session cookie (retry, ZIP-magic validation, no login-HTML passthrough).
 3. Parse `mainstream.xml` → per-stream segments (`streamRemoved`, `__stop__`).
 4. One FFmpeg pass: 720p canvas + content overlay + burned-in ASS subtitles
-   (attendee list, chat replay); VP6/Nellymoser → H.264/AAC. Video gaps → black
+   (attendee list, chat history); VP6/Nellymoser → H.264/AAC. Video gaps → black
    video; audio segments are placed at their timeline offsets (`adelay`+`amix`)
    and padded to the exact timeline length, so output duration matches the
    recording with no drift (overlapping publishers are mixed, not concatenated).
    `--raw` skips the layout and keeps source resolution.
 5. Validate output duration against the timeline; report honestly.
 
-Skipped for now: browser login automation (use `--session`), exact pod-position
+Skipped for now: browser login automation (use `--session` or `.env` credentials),
+exact pod-position
 layout events, camera PiP, Approach A fast path for Enhanced-AV recordings.
 Add when: a recording actually needs it.

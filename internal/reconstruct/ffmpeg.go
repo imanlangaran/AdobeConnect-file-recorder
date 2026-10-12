@@ -28,6 +28,8 @@ type Options struct {
 	FPS         int    // output frame rate (default 25)
 	Overwrite   bool
 	Raw         bool // skip layout composition (full-frame, source resolution)
+	Width       int  // output resolution width (0 = 1280x720 default)
+	Height      int  // output resolution height (0 = 1280x720 default)
 	Chat        []assets.ChatMessage
 	Attendees   []string
 	Progress    func(doneMs, totalMs int64)
@@ -53,6 +55,11 @@ const (
 	fallbackWidth   = 1280
 	fallbackHeight  = 720
 	segmentOverhead = 2 * time.Second // safety per-segment read slack
+	// chat history bounding box on the sidebar (drawn on the canvas — NOT an
+	// ASS event: libass collision-avoidance shifts text events overlapping a
+	// \p1 drawing, which pushed the chat out of the box)
+	chatBoxX, chatBoxY = 966, 274
+	chatBoxW, chatBoxH = 310, 436
 )
 
 // Run reconstructs the recording. It is cancellable via ctx.
@@ -118,6 +125,9 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	if height%2 != 0 {
 		height++
 	}
+	if opt.Width > 0 && opt.Height > 0 {
+		width, height = opt.Width, opt.Height // explicit --resolution target
+	}
 
 	// Layout composition: 1280x720 canvas, content box left, sidebar with
 	// burned-in attendee list + chat replay on the right.
@@ -137,6 +147,9 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	spec := buildSpec(opt.Dir, vidSegs, audSegs, totalMs, width, height, opt.FPS, mode, layout)
 	spec.layout = layout
 	spec.assPath = assPath
+	if layout && opt.Width > 0 && (opt.Width != canvasW || opt.Height != canvasH) {
+		spec.outW, spec.outH = opt.Width, opt.Height // downscale composed canvas
+	}
 	if layout {
 		sec := float64(totalMs) / 1000
 		spec.canvasSrc = []string{"-f", "lavfi", "-i",
@@ -150,7 +163,7 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	if opt.Status != nil {
 		what := "full-frame"
 		if layout {
-			what = "720p layout"
+			what = "layout"
 		}
 		opt.Status(fmt.Sprintf("reconstructing %s %s (%d video / %d audio segments, %s)",
 			mode, what, len(vidSegs), len(audSegs), (time.Duration(totalMs) * time.Millisecond).Truncate(time.Second)))
@@ -177,6 +190,7 @@ type spec struct {
 	layout      bool     // canvas + sidebar composition
 	canvasSrc   []string // lavfi canvas input (placed as input 0)
 	assPath     string   // burned-in subtitles file ("" = none)
+	outW, outH  int      // output resolution override for layout mode (0 = canvas)
 	inputOffset int      // input index of the first node (1 when canvas present)
 }
 
@@ -292,13 +306,18 @@ func (s *spec) args(opt Options) ([]string, error) {
 	}
 	if s.layout && videoOut != "" {
 		inner := strings.Trim(videoOut, "[]")
+		fc.WriteString(fmt.Sprintf("[0:v]drawbox=x=%d:y=%d:w=%d:h=%d:color=0x5A6E82:t=1[vbg];",
+			chatBoxX, chatBoxY, chatBoxW, chatBoxH))
 		if s.assPath != "" {
-			fc.WriteString(fmt.Sprintf("[0:v][%s]overlay=0:0[voc];[voc]subtitles=filename='%s'[vout];",
+			fc.WriteString(fmt.Sprintf("[vbg][%s]overlay=0:0[voc];[voc]subtitles=filename='%s'[vout];",
 				inner, s.assPath))
-			videoOut = "[vout]"
 		} else {
-			fc.WriteString(fmt.Sprintf("[0:v][%s]overlay=0:0[vout];", inner))
-			videoOut = "[vout]"
+			fc.WriteString(fmt.Sprintf("[vbg][%s]overlay=0:0[vout];", inner))
+		}
+		videoOut = "[vout]"
+		if s.outW > 0 && (s.outW != canvasW || s.outH != canvasH) {
+			fc.WriteString(fmt.Sprintf("[vout]scale=%d:%d[vsc];", s.outW, s.outH))
+			videoOut = "[vsc]"
 		}
 	}
 
