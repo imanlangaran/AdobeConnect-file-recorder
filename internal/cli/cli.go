@@ -30,6 +30,11 @@ Flags:
   --out <dir>         output parent directory (default ./recordings)
   --name <title>      output folder name (default: recording page title / zip name)
   --overwrite         replace existing output
+  --mp3               also export recording.mp3 (audio only)
+  --raw               full-frame video at source resolution (skip 720p layout)
+
+Default output is a 1280x720 video approximating the presented layout:
+content on the left, attendee list + chat replay burned into a right sidebar.
 
 Get a session token: log in via browser → DevTools → Network → any request →
 Request Headers → Cookie: BREEZESESSION=…
@@ -60,6 +65,8 @@ func Main(args []string) int {
 		outDir    = fs.String("out", "", "output parent directory")
 		name      = fs.String("name", "", "output folder name")
 		overwrite = fs.Bool("overwrite", false, "replace existing output")
+		raw       = fs.Bool("raw", false, "full-frame video at source resolution (skip 720p layout)")
+		mp3       = fs.Bool("mp3", false, "also export recording.mp3")
 		cookies   = cookieList{}
 	)
 	fs.Var(&cookies, "cookie", "extra cookie as NAME=VALUE (repeatable)")
@@ -96,6 +103,8 @@ func Main(args []string) int {
 		Title:     *name,
 		OutDir:    *outDir,
 		Overwrite: *overwrite,
+		Raw:       *raw,
+		MP3:       *mp3,
 		Status:    func(s string) { fmt.Fprintf(os.Stderr, "\r\033[K%s\n", s) },
 		Progress:  newProgress(os.Stderr),
 	}
@@ -128,7 +137,14 @@ func Main(args []string) int {
 	}
 
 	fmt.Printf("\nDone\n")
-	fmt.Printf("  video:     %s (%s, %s)\n", rep.VideoPath, fmtDur(rep.DurationMs), rep.Mode)
+	kind := "video"
+	if rep.Layout {
+		kind = "video (720p layout)"
+	}
+	fmt.Printf("  %s:     %s (%s, %s)\n", kind, rep.VideoPath, fmtDur(rep.DurationMs), rep.Mode)
+	if rep.MP3Path != "" {
+		fmt.Printf("  mp3:       %s\n", rep.MP3Path)
+	}
 	if rep.ChatMessages > 0 {
 		fmt.Printf("  chat:      %d messages\n", rep.ChatMessages)
 	}

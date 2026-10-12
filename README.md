@@ -4,6 +4,10 @@ Downloads and reconstructs Adobe Connect **Standard AV** (FLV/VP6-era) offline
 recordings — the old recordings that have **no download button and no MP4
 rendition** — into a single MP4 with embedded audio, plus sidecar files.
 
+The default output is a **1280×720 video approximating the presented layout**:
+the shared content on the left, with the attendee list and a chat replay
+(time-synced messages) burned into a 320px sidebar on the right.
+
 Plan & research: [`docs/ADOBE_CONNECT_OFFLINE_RECORDING_PLAN.md`](docs/ADOBE_CONNECT_OFFLINE_RECORDING_PLAN.md)
 
 ## Requirements
@@ -36,19 +40,29 @@ Output lands in `./recordings/<recording-title>/`:
 
 | File | Content |
 |---|---|
-| `recording.mp4` | H.264 + AAC, timeline-synced (gaps filled with black/silence) |
+| `recording.mp4` | 1280×720 H.264 + AAC layout video (content + burned-in chat/attendees sidebar) |
+| `recording.mp3` | audio only (with `--mp3`) |
 | `chat_log.txt` | chat with `HH:MM:SS` recording-relative timestamps |
 | `attendees.txt` | attendee names (deduplicated) |
 | `metadata.json` | duration, segment counts, warnings |
+
+Flags: `--raw` restores the old full-frame output at source resolution;
+`--mp3` adds the MP3 export; `--name`/`--out`/`--overwrite`/`--session`/
+`--cookie` as shown by `ac-rec help`.
 
 ## How it works
 
 1. Derive `…/<id>/output/<id>.zip?download=zip` from the recording URL.
 2. Download with session cookie (retry, ZIP-magic validation, no login-HTML passthrough).
 3. Parse `mainstream.xml` → per-stream segments (`streamRemoved`, `__stop__`).
-4. One FFmpeg pass: VP6/Nellymoser → H.264/AAC, timeline gaps → black video / silence.
+4. One FFmpeg pass: 720p canvas + content overlay + burned-in ASS subtitles
+   (attendee list, chat replay); VP6/Nellymoser → H.264/AAC. Video gaps → black
+   video; audio segments are placed at their timeline offsets (`adelay`+`amix`)
+   and padded to the exact timeline length, so output duration matches the
+   recording with no drift (overlapping publishers are mixed, not concatenated).
+   `--raw` skips the layout and keeps source resolution.
 5. Validate output duration against the timeline; report honestly.
 
-Skipped for now: browser login automation (use `--session`), Approach A fast
-path for Enhanced-AV recordings, camera-only output, whiteboard-as-video.
+Skipped for now: browser login automation (use `--session`), exact pod-position
+layout events, camera PiP, Approach A fast path for Enhanced-AV recordings.
 Add when: a recording actually needs it.

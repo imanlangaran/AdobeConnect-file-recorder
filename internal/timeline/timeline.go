@@ -65,7 +65,7 @@ func filter(segs []Segment, kind string) []Segment {
 }
 
 type xmlMessage struct {
-	Time   int64  `xml:"time,attr"`
+	Time   int64    `xml:"time,attr"`
 	String []string `xml:"String"`
 	Array  struct {
 		Object struct {

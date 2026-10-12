@@ -61,7 +61,8 @@ func ParseChat(r io.Reader) ([]ChatMessage, error) {
 			continue
 		}
 		for _, o := range m.Objects {
-			if o.Text == "" {
+			text := strings.TrimSpace(o.Text)
+			if text == "" {
 				continue
 			}
 			for _, s := range m.String {
@@ -70,7 +71,7 @@ func ParseChat(r io.Reader) ([]ChatMessage, error) {
 					if from == "" {
 						from = "unknown"
 					}
-					out = append(out, ChatMessage{TimeMs: m.Time, From: from, Text: strings.TrimSpace(o.Text)})
+					out = append(out, ChatMessage{TimeMs: m.Time, From: from, Text: text})
 					break
 				}
 			}

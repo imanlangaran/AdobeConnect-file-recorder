@@ -21,7 +21,7 @@ var ErrNoContent = errors.New("server returned no content (HTML page instead of 
 
 // Options control a download.
 type Options struct {
-	Session   string        // value for the BREEZESESSION cookie (optional)
+	Session   string         // value for the BREEZESESSION cookie (optional)
 	Cookies   []*http.Cookie // extra cookies, e.g. from a browser export
 	Referer   string
 	UserAgent string

@@ -16,9 +16,9 @@ func TestExtractFlattensAndIsSafe(t *testing.T) {
 	}
 	zw := zip.NewWriter(f)
 	for name, body := range map[string]string{
-		"mainstream.xml": "<root/>",
+		"mainstream.xml":   "<root/>",
 		"nested/dir/x.flv": "FLV",
-		"../../evil.txt":  "nope",
+		"../../evil.txt":   "nope",
 	} {
 		w, err := zw.Create(name)
 		if err != nil {

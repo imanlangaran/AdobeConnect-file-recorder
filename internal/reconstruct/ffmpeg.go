@@ -15,21 +15,25 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/assets"
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/timeline"
 )
 
 // Options for a reconstruction run.
 type Options struct {
-	Dir        string // extracted archive directory (contains mainstream.xml + FLVs)
-	Out        string // output .mp4 path
-	Preset     string // x264 preset (default "veryfast")
-	CRF        int    // x24 quality (default 23)
-	FPS        int    // output frame rate (default 25)
-	Overwrite  bool
-	Progress   func(doneMs, totalMs int64)
-	Status     func(msg string) // human-readable phase updates
-	FFmpegPath string           // default "ffmpeg"
-	FFprobePath string          // default "ffprobe"
+	Dir         string // extracted archive directory (contains mainstream.xml + FLVs)
+	Out         string // output .mp4 path
+	Preset      string // x264 preset (default "veryfast")
+	CRF         int    // x24 quality (default 23)
+	FPS         int    // output frame rate (default 25)
+	Overwrite   bool
+	Raw         bool // skip layout composition (full-frame, source resolution)
+	Chat        []assets.ChatMessage
+	Attendees   []string
+	Progress    func(doneMs, totalMs int64)
+	Status      func(msg string) // human-readable phase updates
+	FFmpegPath  string           // default "ffmpeg"
+	FFprobePath string           // default "ffprobe"
 }
 
 // Result describes what was produced.
@@ -37,6 +41,7 @@ type Result struct {
 	VideoSegments int
 	AudioSegments int
 	Mode          string // "av", "video-only", "audio-only"
+	Layout        bool   // layout composition applied
 }
 
 const (
@@ -114,39 +119,74 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 		height++
 	}
 
-	spec := buildSpec(opt.Dir, vidSegs, audSegs, totalMs, width, height, opt.FPS, mode)
+	// Layout composition: 1280x720 canvas, content box left, sidebar with
+	// burned-in attendee list + chat replay on the right.
+	layout := !opt.Raw && mode != "audio-only"
+	assPath := ""
+	if layout {
+		vw, vh := contentBox()
+		width, height = vw, vh
+		if len(opt.Chat) > 0 || len(opt.Attendees) > 0 {
+			assPath = filepath.Join(opt.Dir, "layout.ass")
+			if err := os.WriteFile(assPath, []byte(BuildASS(opt.Chat, opt.Attendees, totalMs)), 0o644); err != nil {
+				return Result{}, fmt.Errorf("write subtitles: %w", err)
+			}
+		}
+	}
+
+	spec := buildSpec(opt.Dir, vidSegs, audSegs, totalMs, width, height, opt.FPS, mode, layout)
+	spec.layout = layout
+	spec.assPath = assPath
+	if layout {
+		sec := float64(totalMs) / 1000
+		spec.canvasSrc = []string{"-f", "lavfi", "-i",
+			fmt.Sprintf("color=c=0x1b2838:s=%dx%d:r=%d:d=%.3f", canvasW, canvasH, opt.FPS, sec)}
+	}
 	args, err := spec.args(opt)
 	if err != nil {
 		return Result{}, err
 	}
 
 	if opt.Status != nil {
-		opt.Status(fmt.Sprintf("reconstructing %s (%d video / %d audio segments, %s)",
-			mode, len(vidSegs), len(audSegs), (time.Duration(totalMs) * time.Millisecond).Truncate(time.Second)))
+		what := "full-frame"
+		if layout {
+			what = "720p layout"
+		}
+		opt.Status(fmt.Sprintf("reconstructing %s %s (%d video / %d audio segments, %s)",
+			mode, what, len(vidSegs), len(audSegs), (time.Duration(totalMs) * time.Millisecond).Truncate(time.Second)))
 	}
 	if err := runFFmpeg(ctx, opt, args, totalMs); err != nil {
 		return Result{}, err
 	}
-	return Result{VideoSegments: len(vidSegs), AudioSegments: len(audSegs), Mode: mode}, nil
+	return Result{VideoSegments: len(vidSegs), AudioSegments: len(audSegs), Mode: mode, Layout: layout}, nil
 }
 
 // ---- graph spec ----------------------------------------------------------
 
 type node struct {
-	label string // output label, e.g. "[v0]"
-	src   []string
+	label  string // output label, e.g. "[v0]"
+	src    []string
 	filter string
 }
 
 type spec struct {
-	nodes   []node
-	video   []string // ordered labels feeding video concat (empty if audio-only)
-	audio   []string
+	nodes       []node
+	video       []string // ordered labels feeding video concat (empty if audio-only)
+	audio       []string // placed audio labels (mixed, timeline-aligned)
+	totalMs     int64    // timeline duration: pad/trim audio to exactly this
+	layout      bool     // canvas + sidebar composition
+	canvasSrc   []string // lavfi canvas input (placed as input 0)
+	assPath     string   // burned-in subtitles file ("" = none)
+	inputOffset int      // input index of the first node (1 when canvas present)
 }
 
-func buildSpec(dir string, vid, aud []timeline.Segment, totalMs int64, w, h, fps int, mode string) *spec {
+func buildSpec(dir string, vid, aud []timeline.Segment, totalMs int64, w, h, fps int, mode string, layout bool) *spec {
 	sp := &spec{}
 	idx := 0
+	if layout {
+		sp.inputOffset = 1 // canvas occupies input 0
+	}
+	in := func() int { return idx + sp.inputOffset }
 
 	if mode != "audio-only" {
 		endMs := int64(0)
@@ -159,9 +199,9 @@ func buildSpec(dir string, vid, aud []timeline.Segment, totalMs int64, w, h, fps
 			l := fmt.Sprintf("[v%d]", idx)
 			sp.video = append(sp.video, l)
 			sp.nodes = append(sp.nodes, node{
-				label: l,
-				src:   []string{"-f", "lavfi", "-i", fmt.Sprintf("color=c=black:s=%dx%d:r=%d:d=%.3f", w, h, fps, sec)},
-				filter: fmt.Sprintf("[%d:v]format=yuv420p%s", idx, l),
+				label:  l,
+				src:    []string{"-f", "lavfi", "-i", fmt.Sprintf("color=c=black:s=%dx%d:r=%d:d=%.3f", w, h, fps, sec)},
+				filter: fmt.Sprintf("[%d:v]format=yuv420p%s", in(), l),
 			})
 			idx++
 		}
@@ -173,7 +213,7 @@ func buildSpec(dir string, vid, aud []timeline.Segment, totalMs int64, w, h, fps
 			sp.nodes = append(sp.nodes, node{
 				label:  l,
 				src:    []string{"-t", fmt.Sprintf("%.3f", sec), "-i", filepath.Join(dir, s.FileName())},
-				filter: fmt.Sprintf("[%d:v]%s%s", idx, vf, l),
+				filter: fmt.Sprintf("[%d:v]%s%s", in(), vf, l),
 			})
 			idx++
 			if s.EndMs > endMs {
@@ -184,43 +224,36 @@ func buildSpec(dir string, vid, aud []timeline.Segment, totalMs int64, w, h, fps
 	}
 
 	if mode != "video-only" {
-		endMs := int64(0)
 		afmt := fmt.Sprintf("aresample=%d,aformat=sample_fmts=fltp:sample_rates=%d:channel_layouts=%s", audioRate, audioRate, audioChannels)
-		addSilence := func(durMs int64) {
-			if durMs < 50 {
-				return
-			}
-			sec := float64(durMs) / 1000
-			l := fmt.Sprintf("[a%d]", idx)
-			sp.audio = append(sp.audio, l)
-			sp.nodes = append(sp.nodes, node{
-				label: l,
-				src:   []string{"-f", "lavfi", "-i", fmt.Sprintf("anullsrc=r=%d:cl=%s:d=%.3f", audioRate, audioChannels, sec)},
-				filter: fmt.Sprintf("[%d:a]%s%s", idx, afmt, l),
-			})
-			idx++
-		}
-		for _, s := range aud {
-			addSilence(s.StartMs - endMs)
-			sec := float64(s.DurationMs()) / 1000
+		if len(aud) == 0 {
+			// silent track so players see real duration
 			l := fmt.Sprintf("[a%d]", idx)
 			sp.audio = append(sp.audio, l)
 			sp.nodes = append(sp.nodes, node{
 				label:  l,
-				src:    []string{"-t", fmt.Sprintf("%.3f", sec), "-i", filepath.Join(dir, s.FileName())},
-				filter: fmt.Sprintf("[%d:a]%s%s", idx, afmt, l),
+				src:    []string{"-f", "lavfi", "-i", fmt.Sprintf("anullsrc=r=%d:cl=%s:d=%.3f", audioRate, audioChannels, float64(totalMs)/1000)},
+				filter: fmt.Sprintf("[%d:a]%s%s", in(), afmt, l),
 			})
 			idx++
-			if s.EndMs > endMs {
-				endMs = s.EndMs
-			}
 		}
-		if len(aud) == 0 {
-			addSilence(totalMs) // silent track so players see real duration
-		} else {
-			addSilence(totalMs - endMs)
+		// Each segment is placed at its timeline position (adelay) and mixed,
+		// not concatenated: segments can overlap (two publishers live at once)
+		// and file content duration differs from the timeline slot — plain
+		// concatenation drifts by seconds over an hour-long recording.
+		for _, s := range aud {
+			sec := float64(s.DurationMs()) / 1000
+			l := fmt.Sprintf("[a%d]", idx)
+			sp.audio = append(sp.audio, l)
+			sp.nodes = append(sp.nodes, node{
+				label: l,
+				src:   []string{"-t", fmt.Sprintf("%.3f", sec), "-i", filepath.Join(dir, s.FileName())},
+				filter: fmt.Sprintf("[%d:a]%s,asetpts=PTS-STARTPTS,atrim=0:%.3f,adelay=%d:all=1%s",
+					in(), afmt, sec, s.StartMs, l),
+			})
+			idx++
 		}
 	}
+	sp.totalMs = totalMs
 	return sp
 }
 
@@ -244,11 +277,28 @@ func (s *spec) args(opt Options) ([]string, error) {
 		}
 	}
 	if len(s.audio) > 0 {
+		dur := float64(s.totalMs) / 1000
+		tail := fmt.Sprintf("aresample=%d:async=1,apad=whole_dur=%.3f,atrim=0:%.3f[aout];",
+			audioRate, dur, dur) // fill timestamp holes, pad/trim to exact timeline length
 		if len(s.audio) == 1 {
-			audioOut = s.audio[0]
+			fc.WriteString(s.audio[0] + tail)
 		} else {
-			fc.WriteString(strings.Join(s.audio, "") + fmt.Sprintf("concat=n=%d:v=0:a=1[ao];", len(s.audio)))
-			audioOut = "[ao]"
+			// segments are already placed at their timeline offsets → mix, not concat
+			fc.WriteString(strings.Join(s.audio, "") +
+				fmt.Sprintf("amix=inputs=%d:normalize=0[am0];", len(s.audio)) +
+				"[am0]" + tail)
+		}
+		audioOut = "[aout]"
+	}
+	if s.layout && videoOut != "" {
+		inner := strings.Trim(videoOut, "[]")
+		if s.assPath != "" {
+			fc.WriteString(fmt.Sprintf("[0:v][%s]overlay=0:0[voc];[voc]subtitles=filename='%s'[vout];",
+				inner, s.assPath))
+			videoOut = "[vout]"
+		} else {
+			fc.WriteString(fmt.Sprintf("[0:v][%s]overlay=0:0[vout];", inner))
+			videoOut = "[vout]"
 		}
 	}
 
@@ -265,6 +315,7 @@ func (s *spec) args(opt Options) ([]string, error) {
 	} else {
 		args = append(args, "-n")
 	}
+	args = append(args, s.canvasSrc...)
 	for _, n := range s.nodes {
 		args = append(args, n.src...)
 	}
@@ -315,6 +366,9 @@ func runFFmpeg(ctx context.Context, opt Options, args []string, totalMs int64) e
 			}
 			if v, ok := progressOutTime(line); ok {
 				doneMs := int64(v * 1000) // v is media seconds processed → ms
+				if doneMs < 0 {
+					doneMs = 0 // AAC encoder priming reports a negative start
+				}
 				if doneMs > totalMs {
 					doneMs = totalMs
 				}
@@ -409,6 +463,25 @@ func ProbeDuration(ctx context.Context, ffprobe, file string) (int64, error) {
 		return 0, fmt.Errorf("bad duration %q", strings.TrimSpace(string(out)))
 	}
 	return int64(sec * 1000), nil
+}
+
+// ExtractMP3 renders the audio track of src as an MP3 file.
+func ExtractMP3(ctx context.Context, ffmpeg, src, dst string) error {
+	if ffmpeg == "" {
+		ffmpeg = "ffmpeg"
+	}
+	cmd := exec.CommandContext(ctx, ffmpeg,
+		"-hide_banner", "-loglevel", "error", "-y",
+		"-i", src, "-vn", "-map", "0:a:0",
+		"-c:a", "libmp3lame", "-b:a", "128k", dst)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("mp3 export: %v\n%s", err, strings.TrimSpace(string(out)))
+	}
+	st, err := os.Stat(dst)
+	if err != nil || st.Size() < 1024 {
+		return errors.New("mp3 export produced no output")
+	}
+	return nil
 }
 
 // tailBuffer keeps the last 4 KiB of stderr for error reporting.

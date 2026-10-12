@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,24 +29,29 @@ type Options struct {
 	Title     string         // output folder name (default: archive stem)
 	OutDir    string         // parent output directory (default: cwd)
 	Overwrite bool
+	Raw       bool // full-frame output instead of 720p layout composition
+	MP3       bool // also export recording.mp3
 	Status    func(string)
 	Progress  func(stage string, done, total int64)
 }
 
 // Report summarizes a completed run.
 type Report struct {
-	OutDir          string   `json:"-"`
-	VideoPath       string   `json:"video"`
-	DurationMs      int64    `json:"duration_ms"`
-	ExpectedMs      int64    `json:"expected_duration_ms"`
-	Mode            string   `json:"mode"`
-	VideoSegments   int      `json:"video_segments"`
-	AudioSegments   int      `json:"audio_segments"`
-	ChatMessages    int      `json:"chat_messages"`
-	AttendeeCount   int      `json:"attendee_count"`
-	Warnings        []string `json:"warnings,omitempty"`
-	ArchiveBytes    int64    `json:"archive_bytes"`
-	VideoBytes      int64    `json:"video_bytes"`
+	OutDir        string   `json:"-"`
+	VideoPath     string   `json:"video"`
+	MP3Path       string   `json:"mp3,omitempty"`
+	DurationMs    int64    `json:"duration_ms"`
+	ExpectedMs    int64    `json:"expected_duration_ms"`
+	Mode          string   `json:"mode"`
+	Layout        bool     `json:"layout"`
+	VideoSegments int      `json:"video_segments"`
+	AudioSegments int      `json:"audio_segments"`
+	ChatMessages  int      `json:"chat_messages"`
+	AttendeeCount int      `json:"attendee_count"`
+	Warnings      []string `json:"warnings,omitempty"`
+	ArchiveBytes  int64    `json:"archive_bytes"`
+	VideoBytes    int64    `json:"video_bytes"`
+	MP3Bytes      int64    `json:"mp3_bytes,omitempty"`
 }
 
 // ErrUnsupported marks recordings this tool cannot process.
@@ -122,6 +128,17 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 	}
 	rep.ExpectedMs = tl.DurationMs
 
+	// Sidecar data is also layout input (chat replay + attendee panel).
+	chat := parseChat(rawDir)
+	rep.ChatMessages = len(chat)
+	var attendees []string
+	if f := assets.Find(rawDir, "indexstream.xml"); f != "" {
+		if names, err := assets.ParseAttendees(f); err == nil {
+			attendees = names
+			rep.AttendeeCount = len(names)
+		}
+	}
+
 	// Reconstruct media.
 	outVideo := filepath.Join(outDir, "recording.mp4")
 	rep.VideoPath = outVideo
@@ -129,13 +146,21 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 		Dir:       rawDir,
 		Out:       outVideo,
 		Overwrite: true,
+		Raw:       opt.Raw,
+		Chat:      chat,
+		Attendees: attendees,
 		Status:    status,
-		Progress:  func(d, t int64) { if opt.Progress != nil { opt.Progress("reconstruct", d, t) } },
+		Progress: func(d, t int64) {
+			if opt.Progress != nil {
+				opt.Progress("reconstruct", d, t)
+			}
+		},
 	})
 	if err != nil {
 		return rep, err
 	}
 	rep.Mode = res.Mode
+	rep.Layout = res.Layout
 	rep.VideoSegments = res.VideoSegments
 	rep.AudioSegments = res.AudioSegments
 
@@ -158,9 +183,21 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 		rep.VideoBytes = st.Size()
 	}
 
-	// Sidecars: chat.
-	chat := parseChat(rawDir)
-	rep.ChatMessages = len(chat)
+	// Optional MP3 audio-only export.
+	if opt.MP3 {
+		status("exporting mp3")
+		mp3Path := filepath.Join(outDir, "recording.mp3")
+		if err := reconstruct.ExtractMP3(ctx, "ffmpeg", outVideo, mp3Path); err != nil {
+			rep.Warnings = append(rep.Warnings, err.Error())
+		} else {
+			rep.MP3Path = mp3Path
+			if st, err := os.Stat(mp3Path); err == nil {
+				rep.MP3Bytes = st.Size()
+			}
+		}
+	}
+
+	// Sidecars: chat log.
 	if len(chat) > 0 {
 		var b strings.Builder
 		for _, m := range chat {
@@ -175,12 +212,9 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 	}
 
 	// Sidecars: attendees.
-	if f := assets.Find(rawDir, "indexstream.xml"); f != "" {
-		if names, err := assets.ParseAttendees(f); err == nil {
-			rep.AttendeeCount = len(names)
-			_ = os.WriteFile(filepath.Join(outDir, "attendees.txt"),
-				[]byte(strings.Join(names, "\n")+"\n"), 0o644)
-		}
+	if len(attendees) > 0 {
+		_ = os.WriteFile(filepath.Join(outDir, "attendees.txt"),
+			[]byte(strings.Join(attendees, "\n")+"\n"), 0o644)
 	}
 
 	if err := writeJSON(filepath.Join(outDir, "metadata.json"), rep); err != nil {
@@ -191,17 +225,25 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 }
 
 func parseChat(rawDir string) []assets.ChatMessage {
-	if f := assets.FindPrefix(rawDir, "ftchat"); f != "" {
-		if chat, err := func() ([]assets.ChatMessage, error) {
-			fh, err := os.Open(f)
+	// Glob ftchat*.xml explicitly: FindPrefix would match the binary ftchat0.flv
+	// first (lexically before .xml) and the XML parser would fail.
+	var out []assets.ChatMessage
+	if matches, err := filepath.Glob(filepath.Join(rawDir, "ftchat*.xml")); err == nil {
+		for _, p := range matches {
+			fh, err := os.Open(p)
 			if err != nil {
-				return nil, err
+				continue
 			}
-			defer fh.Close()
-			return assets.ParseChat(fh)
-		}(); err == nil && len(chat) > 0 {
-			return chat
+			chat, err := assets.ParseChat(fh)
+			fh.Close()
+			if err == nil {
+				out = append(out, chat...)
+			}
 		}
+	}
+	if len(out) > 0 {
+		sort.Slice(out, func(i, j int) bool { return out[i].TimeMs < out[j].TimeMs })
+		return out
 	}
 	if f := assets.Find(rawDir, "sco_metadata.xml"); f != "" {
 		if chat, err := func() ([]assets.ChatMessage, error) {

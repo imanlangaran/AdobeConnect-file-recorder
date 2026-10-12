@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/assets"
 )
 
 // TestEndToEnd builds a miniature recording (FLV segments + mainstream.xml)
@@ -53,6 +55,11 @@ func TestEndToEnd(t *testing.T) {
 	var lastMs int64
 	res, err := Run(context.Background(), Options{
 		Dir: dir, Out: out, Overwrite: true,
+		Chat: []assets.ChatMessage{
+			{TimeMs: 500, From: "Alice", Text: "salam!"},
+			{TimeMs: 1200, From: "Omid", Text: "thanks"},
+		},
+		Attendees: []string{"Alice", "Omid"},
 		Progress: func(d, total int64) {
 			if d < lastMs {
 				t.Errorf("progress went backwards: %d < %d", d, lastMs)
@@ -66,29 +73,47 @@ func TestEndToEnd(t *testing.T) {
 	if res.Mode != "av" || res.VideoSegments != 1 || res.AudioSegments != 1 {
 		t.Errorf("result = %+v", res)
 	}
+	if !res.Layout {
+		t.Error("layout should be default")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "layout.ass")); err != nil {
+		t.Errorf("layout.ass missing: %v", err)
+	}
 
 	durMs, err := ProbeDuration(context.Background(), "ffprobe", out)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// expected 2500ms; allow 500ms tolerance (encoder/concat rounding)
-	if durMs < 2000 || durMs > 3000 {
-		t.Errorf("duration = %dms, want ~2500ms ±500", durMs)
+	// canvas is timeline-length → duration must match closely
+	if durMs < 2350 || durMs > 2650 {
+		t.Errorf("duration = %dms, want ~2500ms ±150", durMs)
 	}
 
-	// output must be real MP4 with video + audio streams
+	// output must be real MP4 with video + audio streams, 720p canvas
 	probe := exec.Command("ffprobe", "-v", "error",
-		"-show_entries", "stream=codec_type,codec_name",
+		"-show_entries", "stream=codec_type,codec_name,width,height",
 		"-of", "compact", out)
 	pout, err := probe.Output()
 	if err != nil {
 		t.Fatal(err)
 	}
 	ps := string(pout)
-	for _, want := range []string{"video", "h264", "audio", "aac"} {
+	for _, want := range []string{"video", "h264", "audio", "aac", "width=1280", "height=720"} {
 		if !strings.Contains(ps, want) {
 			t.Errorf("output streams missing %q:\n%s", want, ps)
 		}
+	}
+
+	// mp3 side export
+	mp3 := filepath.Join(t.TempDir(), "recording.mp3")
+	if err := ExtractMP3(context.Background(), "ffmpeg", out, mp3); err != nil {
+		if strings.Contains(err.Error(), "Unknown encoder") {
+			t.Skip("libmp3lame not available")
+		}
+		t.Fatal(err)
+	}
+	if st, err := os.Stat(mp3); err != nil || st.Size() < 1024 {
+		t.Errorf("mp3 missing or empty: %v", err)
 	}
 }
 

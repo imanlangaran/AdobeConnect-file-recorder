@@ -28,9 +28,9 @@ func TestFileSuccess(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "out.zip")
 	var progressed bool
 	err := File(context.Background(), srv.Client(), srv.URL, dest, Options{
-		Session:   "tok123",
-		Validate:  ValidateZIP,
-		Progress:  func(d, t int64) { progressed = true },
+		Session:  "tok123",
+		Validate: ValidateZIP,
+		Progress: func(d, t int64) { progressed = true },
 	})
 	if err != nil {
 		t.Fatal(err)
