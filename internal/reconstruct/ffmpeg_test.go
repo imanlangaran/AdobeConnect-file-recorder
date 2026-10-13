@@ -200,15 +200,17 @@ func TestArgsLayoutComposition(t *testing.T) {
 	sp.layout = true
 	sp.assPath = "/raw/layout.ass"
 	sp.chatBoxY, sp.chatBoxH = 0, 720 // newPanel(0, canvasH, …): box == video rect
-	sp.canvasSrc = []string{"-f", "lavfi", "-i", "color=c=0x1b2838:s=1280x720:r=25:d=3.000"}
+	sp.canvasSrc = []string{"-f", "lavfi", "-i", "color=c=black:s=1280x720:r=25:d=3.000"}
 	args, err := sp.args(Options{Preset: "veryfast", CRF: 23, Out: "o.mp4"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	all := strings.Join(args, " ")
 	for _, want := range []string{
-		"color=c=0x1b2838:s=1280x720", // canvas input
-		"[0:v]drawbox=x=966:y=0:w=310:h=720:color=0x5A6E82:t=1[vbg];[vbg][v0]overlay=0:0", // box, then content        // content composited over canvas
+		"color=c=black:s=1280x720", // canvas input (black; navy panel drawn only over video rect)
+		"[0:v]drawbox=x=960:y=0:w=320:h=720:color=0x1b2838:t=fill[vcs];" + // navy sidebar = video's height
+			"[vcs]drawbox=x=966:y=0:w=310:h=720:color=0x5A6E82:t=1[vbg];" + // border box
+			"[vbg][v0]overlay=0:0", // content composited over panel
 		"subtitles=filename='/raw/layout.ass'",
 		"-map [vout]",
 		"scale=960:720", // content box left of 320px sidebar
@@ -218,7 +220,7 @@ func TestArgsLayoutComposition(t *testing.T) {
 		}
 	}
 	// canvas must come before segment inputs
-	ci := strings.Index(all, "color=c=0x1b2838")
+	ci := strings.Index(all, "color=c=black")
 	si := strings.Index(all, "/raw/s.flv")
 	if ci < 0 || si < 0 || ci > si {
 		t.Errorf("canvas input must precede segments (canvas=%d seg=%d)", ci, si)
@@ -233,7 +235,8 @@ func TestArgsLayoutScaleTail(t *testing.T) {
 		3000, 960, 720, 25, "av", true)
 	sp.layout = true
 	sp.assPath = "/raw/layout.ass"
-	sp.canvasSrc = []string{"-f", "lavfi", "-i", "color=c=0x1b2838:s=1280x720:r=25:d=3.000"}
+	sp.chatBoxY, sp.chatBoxH = 0, 720
+	sp.canvasSrc = []string{"-f", "lavfi", "-i", "color=c=black:s=1280x720:r=25:d=3.000"}
 	sp.outW, sp.outH = 854, 480
 	args, err := sp.args(Options{Preset: "veryfast", CRF: 23, Out: "o.mp4"})
 	if err != nil {

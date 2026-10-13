@@ -165,7 +165,7 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	if layout {
 		sec := float64(totalMs) / 1000
 		spec.canvasSrc = []string{"-f", "lavfi", "-i",
-			fmt.Sprintf("color=c=0x1b2838:s=%dx%d:r=%d:d=%.3f", canvasW, canvasH, opt.FPS, sec)}
+			fmt.Sprintf("color=c=black:s=%dx%d:r=%d:d=%.3f", canvasW, canvasH, opt.FPS, sec)}
 	}
 	args, err := spec.args(opt)
 	if err != nil {
@@ -320,7 +320,11 @@ func (s *spec) args(opt Options) ([]string, error) {
 	}
 	if s.layout && videoOut != "" {
 		inner := strings.Trim(videoOut, "[]")
-		fc.WriteString(fmt.Sprintf("[0:v]drawbox=x=%d:y=%d:w=%d:h=%d:color=0x5A6E82:t=1[vbg];",
+		// Sidebar panel: navy fill only over the video's rect, so the colored
+		// box's height matches the recorded video (black letterbox above/below).
+		fc.WriteString(fmt.Sprintf("[0:v]drawbox=x=%d:y=%d:w=%d:h=%d:color=0x1b2838:t=fill[vcs];",
+			canvasW-sidebarW, s.chatBoxY, sidebarW, s.chatBoxH))
+		fc.WriteString(fmt.Sprintf("[vcs]drawbox=x=%d:y=%d:w=%d:h=%d:color=0x5A6E82:t=1[vbg];",
 			chatBoxX, s.chatBoxY, chatBoxW, s.chatBoxH))
 		if s.assPath != "" {
 			fc.WriteString(fmt.Sprintf("[vbg][%s]overlay=0:0[voc];[voc]subtitles=filename='%s'[vout];",
