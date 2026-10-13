@@ -62,6 +62,39 @@ func TestParse(t *testing.T) {
 	}
 }
 
+// A stream that is still live when the recording stops never gets a
+// streamRemoved event — real archives do this after re-publishing a stream
+// mid-recording (it must then span [startTime, __stop__]).
+func TestParseClosesStreamsStillLiveAtStop(t *testing.T) {
+	const s = `<?xml version="1.0" encoding="utf-8"?>
+<root>
+    <Message time="2674000" type="data">
+        <Method><![CDATA[playEvent]]></Method>
+        <String><![CDATA[streamAdded]]></String>
+        <Array>
+            <Object>
+                <startTime><![CDATA[2676217]]></startTime>
+                <streamName><![CDATA[/cameraVoip_0_6]]></streamName>
+                <streamType><![CDATA[cameraVoip]]></streamType>
+            </Object>
+        </Array>
+    </Message>
+    <Message time="4956055" type="data">
+        <Method><![CDATA[playEvent]]></Method>
+        <String><![CDATA[__stop__]]></String>
+    </Message>
+</root>`
+	tl, err := Parse(strings.NewReader(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := tl.Audio()
+	if len(a) != 1 || a[0].Name != "cameraVoip_0_6" ||
+		a[0].StartMs != 2676217 || a[0].EndMs != 4956055 {
+		t.Errorf("live-at-stop stream = %+v, want cameraVoip_0_6 [2676217,4956055]", a)
+	}
+}
+
 func TestParseNoStopFallsBackToMaxEnd(t *testing.T) {
 	s := strings.ReplaceAll(fixture, "<String><![CDATA[__stop__]]></String>", "<String><![CDATA[other]]></String>")
 	tl, err := Parse(strings.NewReader(s))

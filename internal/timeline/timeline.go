@@ -14,7 +14,8 @@
 //	</Message>
 //
 // A segment spans [startTime, Message@time]. Total duration is given by the
-// Message containing <String>__stop__</String>.
+// Message containing <String>__stop__</String>. Streams still live at that
+// stop event have no streamRemoved message — they span [startTime, stop].
 package timeline
 
 import (
@@ -81,6 +82,7 @@ func Parse(r io.Reader) (Timeline, error) {
 	dec := xml.NewDecoder(r)
 	var tl Timeline
 	var maxEnd int64
+	open := map[string]Segment{} // streamAdded with no streamRemoved yet
 	for {
 		tok, err := dec.Token()
 		if errors.Is(err, io.EOF) {
@@ -101,6 +103,22 @@ func Parse(r io.Reader) (Timeline, error) {
 			switch {
 			case s == "__stop__":
 				tl.DurationMs = m.Time
+			case strings.HasPrefix(s, "streamAdded"):
+				o := m.Array.Object
+				if o.StreamName == "" || o.StartTime < 0 {
+					continue
+				}
+				name := strings.TrimPrefix(o.StreamName, "/")
+				kind := o.StreamType
+				if kind == "" { // older archives omit streamType; infer from name
+					kind = kindFromName(name)
+				}
+				if kind == "" {
+					continue
+				}
+				if _, live := open[name]; !live { // duplicate add: keep first start
+					open[name] = Segment{Kind: kind, Name: name, StartMs: o.StartTime}
+				}
 			case strings.HasPrefix(s, "streamRemoved"):
 				o := m.Array.Object
 				if o.StreamName == "" || o.StartTime < 0 || m.Time <= o.StartTime {
@@ -117,17 +135,28 @@ func Parse(r io.Reader) (Timeline, error) {
 				tl.Segments = append(tl.Segments, Segment{
 					Kind: kind, Name: name, StartMs: o.StartTime, EndMs: m.Time,
 				})
+				delete(open, name)
 				if m.Time > maxEnd {
 					maxEnd = m.Time
 				}
 			}
 		}
 	}
-	if len(tl.Segments) == 0 {
-		return Timeline{}, fmt.Errorf("%w: no stream segments found", ErrInvalidTimeline)
-	}
 	if tl.DurationMs == 0 {
 		tl.DurationMs = maxEnd // fallback: recording stop event missing
+	}
+	// Streams still live when the recording stopped never get a
+	// streamRemoved event (a real archive re-published the presenter's
+	// audio mid-recording and dropped it only at stop) — close them at the
+	// recording end, otherwise their whole run is silently lost.
+	for _, seg := range open {
+		seg.EndMs = tl.DurationMs
+		if seg.EndMs > seg.StartMs {
+			tl.Segments = append(tl.Segments, seg)
+		}
+	}
+	if len(tl.Segments) == 0 {
+		return Timeline{}, fmt.Errorf("%w: no stream segments found", ErrInvalidTimeline)
 	}
 	sortSegments(tl.Segments)
 	return tl, nil
