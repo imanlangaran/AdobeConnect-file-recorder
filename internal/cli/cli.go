@@ -337,31 +337,34 @@ func fmtDur(ms int64) string {
 	return fmt.Sprintf("%d:%02d", m, s)
 }
 
-// newProgress prints throttled single-line progress on w.
+// newProgress prints throttled single-line progress on w, with the elapsed
+// wall time appended so long stages show how long they've been running.
 func newProgress(w io.Writer) func(stage string, done, total int64) {
 	var last time.Time
 	var lastStage string
+	start := time.Now()
 	return func(stage string, done, total int64) {
 		if time.Since(last) < 200*time.Millisecond && stage == lastStage {
 			return
 		}
 		last = time.Now()
 		lastStage = stage
+		var s string
 		if stage == "download" || stage == "extract" { // bytes
 			if total > 0 {
-				fmt.Fprintf(w, "\r\033[K%s %5.1f%% (%.1f / %.1f MB)", stage,
+				s = fmt.Sprintf("%s %5.1f%% (%.1f / %.1f MB)", stage,
 					float64(done)/float64(total)*100,
 					float64(done)/(1<<20), float64(total)/(1<<20))
 			} else {
-				fmt.Fprintf(w, "\r\033[K%s %.1f MB", stage, float64(done)/(1<<20))
+				s = fmt.Sprintf("%s %.1f MB", stage, float64(done)/(1<<20))
 			}
-			return
-		}
-		if total > 0 { // milliseconds
-			fmt.Fprintf(w, "\r\033[K%s %5.1f%% (%s / %s)", stage,
+		} else if total > 0 { // milliseconds
+			s = fmt.Sprintf("%s %5.1f%% (%s / %s)", stage,
 				float64(done)/float64(total)*100, fmtDur(done), fmtDur(total))
 		} else {
-			fmt.Fprintf(w, "\r\033[K%s %s", stage, fmtDur(done))
+			s = fmt.Sprintf("%s %s", stage, fmtDur(done))
 		}
+		fmt.Fprintf(w, "\r\033[K%s  [%s elapsed]", s,
+			fmtDur(int64(time.Since(start)/time.Millisecond)))
 	}
 }

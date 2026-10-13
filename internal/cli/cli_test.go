@@ -80,5 +80,8 @@ func TestNewProgressLabels(t *testing.T) {
 		if !strings.Contains(buf.String(), stage+" ") {
 			t.Errorf("progress for stage %q printed %q", stage, buf.String())
 		}
+		if !strings.Contains(buf.String(), "elapsed]") {
+			t.Errorf("progress for stage %q misses the elapsed-time suffix: %q", stage, buf.String())
+		}
 	}
 }
