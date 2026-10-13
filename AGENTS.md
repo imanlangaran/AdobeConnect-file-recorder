@@ -52,6 +52,38 @@ dev builds; never hardcode a release number in source.
    commits do not touch version files. Only cut a release or pre-release when
    the user asks.
 
+## Branching & CI/CD
+
+Branch model — three refs, nothing more:
+- `main`: the only long-lived branch. Always builds; `gofmt`/`vet`/`test`
+  green. Feature work commits land here directly.
+- Pre-release: push an annotated tag `vX.Y.Z-rc.N` **together with** the
+  commit that sets `VERSION` to that same string. Never tag by hand without
+  the matching `VERSION` commit.
+- Release: push an annotated tag `vX.Y.Z` **together with** the commit that
+  sets `VERSION` to `vX.Y.Z`.
+
+Workflow automation (`.github/workflows/`):
+- `ci.yml` runs on every push/PR to `main` (gofmt/vet/test/build). It gates
+  merges; it publishes nothing.
+- `release.yml` runs on any pushed `v*` tag. It **verifies the tag matches
+  `VERSION`** (fails loudly otherwise), builds linux/darwin/windows binaries
+  stamped via `-ldflags`, and publishes a GitHub Release. A tag containing a
+  hyphen (`-rc.N`) is published as a pre-release; otherwise a full release.
+
+Release trigger is a single command — the commit that bumps `VERSION` plus
+`--follow-tags`:
+```
+git commit -am "release vX.Y.Z-rc.N" && git push --follow-tags
+```
+There is no manual `git tag` step in the happy path; the workflow keys off the
+pushed tag and reads the version from `VERSION`.
+
+Release branches (`release/X.Y`) are NOT used — they add overhead for a solo
+CLI. Add one only when a shipped version must be maintained while the next
+minor is in development; the workflow still keys off tags, so nothing else
+changes.
+
 ## Code standards
 
 - Go stdlib only; no new module dependencies.
