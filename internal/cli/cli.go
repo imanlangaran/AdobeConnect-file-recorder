@@ -33,6 +33,9 @@ Flags:
   --overwrite         replace existing output
   --mp3               also export recording.mp3 (audio only)
   --resolution <p>    output resolution: 480p | 720p | 1080p (default 720p)
+  --fps <n>           output frame rate: 12 | 15 | 25 | 30 (default 25)
+  --preset <name>     x264 preset: ultrafast … veryslow (default veryfast)
+  --crf <n>           x264 quality; higher = faster/softer (default 23)
   --raw               full-frame video at source resolution (skip layout)
 
 Download auth: --session <tok> / --cookie, or a .env file in the current
