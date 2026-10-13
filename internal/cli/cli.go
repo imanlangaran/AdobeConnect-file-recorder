@@ -17,6 +17,7 @@ import (
 
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/engine"
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/recordingurl"
+	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/version"
 )
 
 const usage = `ac-rec — Adobe Connect offline recording downloader/reconstructor
@@ -37,6 +38,7 @@ Flags:
   --preset <name>     x264 preset: ultrafast … veryslow (default veryfast)
   --crf <n>           x264 quality; higher = faster/softer (default 23)
   --raw               full-frame video at source resolution (skip layout)
+  --version           print version and exit
 
 Download auth: --session <tok> / --cookie, or a .env file in the current
 directory with AC_USERNAME=… and AC_PASSWORD=… (or USERNAME=… / PASSWORD=…);
@@ -59,6 +61,9 @@ func Main(args []string) int {
 
 	switch cmd {
 	case "download", "reconstruct":
+	case "-v", "--version", "version":
+		fmt.Printf("ac-rec %s\n", version.Version)
+		return 0
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return 0
