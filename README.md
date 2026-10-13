@@ -65,7 +65,9 @@ Output lands in `./recordings/<recording-title>/`:
 
 Flags: `--raw` restores the old full-frame output at source resolution;
 `--mp3` adds the MP3 export; `--resolution 480p|720p|1080p` lowers/raises the
-output resolution (default 720p); `--name`/`--out`/`--overwrite`/`--session`/
+output resolution (default 720p); `--fps` (default 25), `--preset` and `--crf`
+speed up encoding — e.g. `--fps 12 --preset ultrafast` renders ~4x faster for
+screen-share recordings; `--name`/`--out`/`--overwrite`/`--session`/
 `--cookie` as shown by `ac-rec help`.
 
 ## How it works

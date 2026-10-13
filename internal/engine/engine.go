@@ -33,6 +33,9 @@ type Options struct {
 	MP3       bool   // also export recording.mp3
 	Width     int    // output resolution width (0 = 1280x720 default)
 	Height    int    // output resolution height (0 = 1280x720 default)
+	FPS       int    // output frame rate (0 = 25)
+	Preset    string // x264 preset ("" = veryfast)
+	CRF       int    // x264 quality (0 = 23)
 	Username  string // .env credentials: logged in via /api/xml before download
 	Password  string
 	Status    func(string)
@@ -166,6 +169,9 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 		Raw:       opt.Raw,
 		Width:     opt.Width,
 		Height:    opt.Height,
+		FPS:       opt.FPS,
+		Preset:    opt.Preset,
+		CRF:       opt.CRF,
 		Chat:      chat,
 		Attendees: attendees,
 		Status:    status,
