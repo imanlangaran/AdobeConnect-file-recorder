@@ -69,10 +69,10 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 	if opt.Preset == "" {
 		opt.Preset = defaultPreset
 	}
-	if opt.CRF == 0 {
+	if opt.CRF <= 0 { // 0 = unset (CRF 0 is pointless in practice); negatives invalid
 		opt.CRF = defaultCRF
 	}
-	if opt.FPS == 0 {
+	if opt.FPS <= 0 {
 		opt.FPS = defaultFPS
 	}
 	if opt.FFmpegPath == "" {

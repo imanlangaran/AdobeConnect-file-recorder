@@ -74,7 +74,7 @@ func Main(args []string) int {
 		raw        = fs.Bool("raw", false, "full-frame video at source resolution (skip layout)")
 		mp3        = fs.Bool("mp3", false, "also export recording.mp3")
 		resolution = fs.String("resolution", "720p", "output resolution: 480p, 720p, 1080p")
-		fps        = fs.Int("fps", 0, "output frame rate (default 25; 12-15 suits screen-share recordings)")
+		fps        = fs.Int("fps", 0, "output frame rate (typical: 12, 15, 25, 30; default 25)")
 		preset     = fs.String("preset", "", "x264 preset: ultrafast..veryslow (default veryfast)")
 		crf        = fs.Int("crf", 0, "x264 CRF (default 23; higher = faster, smaller, softer)")
 		cookies    = cookieList{}
@@ -158,6 +158,7 @@ func Main(args []string) int {
 		}
 	}
 
+	start := time.Now()
 	rep, err := engine.Run(ctx, opt)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -168,7 +169,7 @@ func Main(args []string) int {
 		return 1
 	}
 
-	fmt.Printf("\nDone\n")
+	fmt.Printf("\nDone in %s\n", fmtDur(int64(time.Since(start)/time.Millisecond)))
 	kind := "video"
 	if rep.Layout {
 		kind = "video (layout)"
