@@ -87,3 +87,27 @@ Skipped for now: browser login automation (use `--session` or `.env` credentials
 exact pod-position
 layout events, camera PiP, Approach A fast path for Enhanced-AV recordings.
 Add when: a recording actually needs it.
+
+## Queue service
+
+`ac-rec serve` runs N workers draining a persistent queue, plus a status
+page and a tiny JSON API:
+
+```sh
+cp .env.example .env   # set AC_USERNAME/AC_PASSWORD, PORT, MAX_WORKERS, …
+bin/ac-rec serve [--env .env]
+
+curl -X POST localhost:8080/api/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://webinar5.um.ac.ir/p15rdeovw4ge/"}'
+```
+
+Open `http://localhost:8080/` for the status page; `GET /api/tasks` and
+`GET /api/tasks/{id}` show queue state. `.env` keys: `PORT`, `DATA_DIR`,
+`OUT_DIR`, `MAX_WORKERS`, `AC_USERNAME`/`AC_PASSWORD`, `DEFAULT_RESOLUTION`,
+`DEFAULT_FPS`, `DEFAULT_PRESET`, `DEFAULT_CRF`, `EXPORT_MP3`, `RETRY_COUNT`
+(env vars override the file). Docker:
+
+```sh
+docker compose up --build
+```
