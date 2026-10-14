@@ -276,6 +276,14 @@ func (a queueAdapter) Counts() map[string]int {
 	return out
 }
 
+func (a queueAdapter) Delete(id string) bool {
+	return a.q.Delete(id) == nil
+}
+
+func (a queueAdapter) Subscribe(fn func()) {
+	a.q.Subscribe(fn)
+}
+
 func toServerTask(t queue.Task) server.Task {
 	return server.Task{
 		ID: t.ID, URL: t.URL, RecordingID: t.RecordingID,

@@ -51,9 +51,10 @@ var ErrNotFound = errors.New("queue: task not found")
 // persisted atomically (write temp file + rename) so a crash never leaves a
 // half-written queue behind. Safe for concurrent use within one process.
 type Store struct {
-	mu   sync.Mutex
-	path string
-	seq  atomic.Uint64
+	mu        sync.Mutex
+	path      string
+	seq       atomic.Uint64
+	listeners []func()
 }
 
 type diskState struct {
@@ -300,6 +301,35 @@ func (s *Store) Counts() (map[Status]int, error) {
 	return m, nil
 }
 
+// Delete removes a task with id from the store. Returns ErrNotFound if not found.
+func (s *Store) Delete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tasks, err := s.loadLocked()
+	if err != nil {
+		return err
+	}
+	idx := -1
+	for i, t := range tasks {
+		if t.ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return ErrNotFound
+	}
+	tasks = append(tasks[:idx], tasks[idx+1:]...)
+	return s.saveLocked(tasks)
+}
+
+// Subscribe registers a callback invoked whenever the store is modified.
+func (s *Store) Subscribe(fn func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.listeners = append(s.listeners, fn)
+}
+
 // Close releases the store. No-op for the file backend.
 func (s *Store) Close() error { return nil }
 
@@ -343,7 +373,13 @@ func (s *Store) saveLocked(tasks []Task) error {
 	if err := os.WriteFile(tmp, raw, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	if err := os.Rename(tmp, s.path); err != nil {
+		return err
+	}
+	for _, fn := range s.listeners {
+		go fn()
+	}
+	return nil
 }
 
 // newID is timestamp-first with a per-process monotonic counter, so

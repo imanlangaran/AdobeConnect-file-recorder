@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -61,6 +62,25 @@ func (f *fakeStore) Counts() map[string]int {
 		m[t.Status]++
 	}
 	return m
+}
+
+func (f *fakeStore) Delete(id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	idx := -1
+	for i, t := range f.tasks {
+		if t.ID == id {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return false
+	}
+	delete(f.byID, id)
+	delete(f.byURL, f.tasks[idx].URL)
+	f.tasks = append(f.tasks[:idx], f.tasks[idx+1:]...)
+	return true
 }
 
 func TestPostValidAccepted(t *testing.T) {
@@ -155,13 +175,83 @@ func TestStatusPageHasTable(t *testing.T) {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"<table", "p15rdeovw4ge", "<form", `name="url"`, "htmx", "tailwindcss", "daisyui"} {
+	for _, want := range []string{"<table", "p15rdeovw4ge", "<form", `name="url"`, "react", "tailwindcss", "daisyui"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("status page missing %q: %.200s", want, body)
 		}
 	}
 	if strings.Contains(body, "http-equiv=\"refresh\"") {
-		t.Fatal("status page must not meta-refresh (htmx polls instead)")
+		t.Fatal("status page must not meta-refresh")
+	}
+}
+
+func TestDeleteTask(t *testing.T) {
+	st := newFake()
+	task, _, err := st.Enqueue("https://example.adobeconnect.com/p15rdeovw4ge/", "p15rdeovw4ge")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := New(st)
+
+	// Delete existing task
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/tasks/"+task.ID, nil)
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var res map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil || res["ok"] != true {
+		t.Fatalf("expected ok=true, got %+v", res)
+	}
+
+	// Delete missing task returns 404
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodDelete, "/api/tasks/missing-id", nil)
+	h.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusNotFound {
+		t.Fatalf("want 404, got %d", rec2.Code)
+	}
+}
+
+func TestSSEEvents(t *testing.T) {
+	st := newFake()
+	h := New(st)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/events", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		h.ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	// Wait for ping
+	time.Sleep(50 * time.Millisecond)
+
+	// Trigger enqueue to generate update event
+	postReq := httptest.NewRequest(http.MethodPost, "/api/tasks", strings.NewReader(`{"url":"https://example.adobeconnect.com/p123/"}`))
+	postReq.Header.Set("Content-Type", "application/json")
+	postRec := httptest.NewRecorder()
+	h.ServeHTTP(postRec, postReq)
+	if postRec.Code != http.StatusAccepted {
+		t.Fatalf("enqueue code: %d", postRec.Code)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	<-done
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: ping") {
+		t.Fatalf("SSE missing ping: %s", body)
+	}
+	if !strings.Contains(body, "event: update") {
+		t.Fatalf("SSE missing update: %s", body)
 	}
 }
 

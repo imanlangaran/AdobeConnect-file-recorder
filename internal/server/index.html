@@ -1,0 +1,690 @@
+<!doctype html>
+<html lang="en" data-theme="night">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ac-rec queue</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.umd.js"></script>
+  <script>
+    // Apply saved theme immediately before render to avoid flash
+    const savedTheme = localStorage.getItem('ac-theme') || 'night';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+  </script>
+</head>
+<body class="min-h-screen bg-base-100 text-base-content antialiased">
+
+<div id="root">
+  <!-- SSR Fallback: Pre-rendered snapshot so curl, test suites and initial paint work instantly -->
+  <div class="mx-auto max-w-6xl px-4 py-6">
+    <header class="mb-4 flex flex-wrap items-baseline justify-between gap-3 border-b border-base-300 pb-3">
+      <div class="flex items-center gap-3">
+        <h1 class="text-2xl font-bold tracking-tight">ac-rec queue</h1>
+        <span class="badge badge-sm badge-ghost">SSR loading...</span>
+      </div>
+      <a class="link link-primary text-sm" href="/api/tasks">JSON API</a>
+    </header>
+    <section class="card bg-base-200 shadow">
+      <div class="card-body gap-2 p-4">
+        <h2 class="card-title text-base">Enqueue recording</h2>
+        <form class="join w-full">
+          <input name="url" type="url" required placeholder="https://host/pXXXXXXXX/" class="input join-item input-bordered input-sm w-full">
+          <button class="btn btn-primary btn-sm join-item" type="submit">Add</button>
+        </form>
+      </div>
+    </section>
+    <section class="mt-4">
+      <table class="table table-zebra table-sm">
+        <thead>
+          <tr><th>Recording</th><th>Status</th><th>Att.</th><th>State / Detail</th><th>Created</th><th>Updated</th><th>Link</th></tr>
+        </thead>
+        <tbody>
+          {{range .Tasks}}
+          <tr>
+            <td class="font-mono text-xs">{{.RecordingID}}</td>
+            <td><span class="badge badge-sm {{badge .Status}}">{{.Status}}</span></td>
+            <td>{{.Attempts}}</td>
+            <td class="text-xs">{{if .LastError}}{{.LastError}}{{else if .Stage}}{{.Stage}}{{else if .ReportJSON}}report ready{{else}}--{{end}}</td>
+            <td class="text-xs">{{ftime .CreatedAt}}</td>
+            <td class="text-xs">{{ftime .UpdatedAt}}</td>
+            <td><a class="link link-primary text-xs" href="{{.URL}}" target="_blank" rel="noopener">open</a></td>
+          </tr>
+          {{else}}
+          <tr><td colspan="7" class="py-6 text-center opacity-60">No tasks yet - paste a recording URL above.</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+    </section>
+  </div>
+</div>
+
+<script>
+(function() {
+  const { useState, useEffect, useMemo, useCallback } = React;
+  const html = htm.bind(React.createElement);
+
+  const THEMES = [
+    { id: 'night', label: 'Night (Dark)' },
+    { id: 'dark', label: 'Dark' },
+    { id: 'light', label: 'Light' },
+    { id: 'corporate', label: 'Corporate' },
+    { id: 'dracula', label: 'Dracula' },
+    { id: 'synthwave', label: 'Synthwave' },
+    { id: 'emerald', label: 'Emerald' },
+    { id: 'cupcake', label: 'Cupcake' }
+  ];
+
+  function formatTime(isoStr) {
+    if (!isoStr) return '--';
+    try {
+      const d = new Date(isoStr);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' ' +
+             d.toLocaleDateString([], { day: '2-digit', month: 'short' });
+    } catch (e) {
+      return isoStr;
+    }
+  }
+
+  function formatBytes(bytes) {
+    if (!bytes || bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(1024));
+    return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i];
+  }
+
+  function formatDuration(ms) {
+    if (!ms || ms <= 0) return '0s';
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    if (h > 0) return `${h}h ${m}m ${s}s`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  }
+
+  function parseJSON(str) {
+    if (!str) return null;
+    try {
+      return JSON.parse(str);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function parseProgress(stage) {
+    if (!stage) return null;
+    const match = stage.match(/(\d+)%/);
+    return match ? parseInt(match[1], 10) : null;
+  }
+
+  function statusBadgeClass(status) {
+    switch (status) {
+      case 'done': return 'badge-success text-success-content';
+      case 'failed': return 'badge-error text-error-content';
+      case 'downloading':
+      case 'processing': return 'badge-info text-info-content animate-pulse';
+      case 'queued': return 'badge-warning text-warning-content';
+      default: return 'badge-ghost';
+    }
+  }
+
+  // Report Details Modal
+  function ReportModal({ data, onClose }) {
+    if (!data) return null;
+    const isEngine = typeof data === 'object' && data !== null && (data.video || data.duration_ms || data.video_bytes);
+
+    return html`
+      <div className="modal modal-open">
+        <div className="modal-box max-w-2xl bg-base-100 border border-base-300 shadow-xl">
+          <div className="flex items-center justify-between border-b border-base-300 pb-3 mb-4">
+            <h3 className="font-bold text-base flex items-center gap-2">
+              <span className="badge badge-success badge-sm">Done</span>
+              <span>Recording Run Report</span>
+            </h3>
+            <button className="btn btn-sm btn-circle btn-ghost" onClick=${onClose}>✕</button>
+          </div>
+
+          ${isEngine ? html`
+            <div className="space-y-4">
+              <!-- Summary Grid -->
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                <div className="p-3 bg-base-200 rounded-box border border-base-300">
+                  <div className="text-2xs opacity-60 uppercase font-semibold">Duration</div>
+                  <div className="text-base font-bold text-primary">${formatDuration(data.duration_ms)}</div>
+                  ${data.expected_duration_ms ? html`
+                    <div className="text-2xs opacity-50">expected: ${formatDuration(data.expected_duration_ms)}</div>
+                  ` : null}
+                </div>
+                <div className="p-3 bg-base-200 rounded-box border border-base-300">
+                  <div className="text-2xs opacity-60 uppercase font-semibold">Video File</div>
+                  <div className="text-base font-bold">${formatBytes(data.video_bytes)}</div>
+                  <div className="text-2xs opacity-50">${data.video_segments || 0} segment(s)</div>
+                </div>
+                <div className="p-3 bg-base-200 rounded-box border border-base-300">
+                  <div className="text-2xs opacity-60 uppercase font-semibold">Audio / MP3</div>
+                  <div className="text-base font-bold">${data.mp3_bytes ? formatBytes(data.mp3_bytes) : 'None'}</div>
+                  <div className="text-2xs opacity-50">${data.audio_segments || 0} segment(s)</div>
+                </div>
+                <div className="p-3 bg-base-200 rounded-box border border-base-300">
+                  <div className="text-2xs opacity-60 uppercase font-semibold">Activity</div>
+                  <div className="text-base font-bold">${data.attendee_count || 0} users</div>
+                  <div className="text-2xs opacity-50">${data.chat_messages || 0} chats</div>
+                </div>
+              </div>
+
+              <!-- Output Paths -->
+              <div className="p-3 bg-base-200 rounded-box border border-base-300 space-y-2 text-xs">
+                <div className="font-semibold text-2xs uppercase opacity-60">Output Artifacts</div>
+                ${data.video ? html`
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="badge badge-xs badge-primary font-mono">MP4</span>
+                    <span className="font-mono text-xs select-all break-all">${data.video}</span>
+                  </div>
+                ` : null}
+                ${data.mp3 ? html`
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="badge badge-xs badge-secondary font-mono">MP3</span>
+                    <span className="font-mono text-xs select-all break-all">${data.mp3}</span>
+                  </div>
+                ` : null}
+                ${data.archive_bytes ? html`
+                  <div className="text-2xs opacity-60">
+                    Source ZIP: ${formatBytes(data.archive_bytes)} &bull; Mode: ${data.mode || 'av'} &bull; Layout: ${data.layout ? 'yes' : 'no'}
+                  </div>
+                ` : null}
+              </div>
+
+              <!-- Warnings -->
+              ${data.warnings && data.warnings.length > 0 ? html`
+                <div className="alert alert-warning py-2 text-xs">
+                  <div>
+                    <div className="font-bold">Warnings during processing:</div>
+                    <ul className="list-disc list-inside mt-1 space-y-0.5">
+                      ${data.warnings.map((w, idx) => html`<li key=${idx}>${w}</li>`)}
+                    </ul>
+                  </div>
+                </div>
+              ` : null}
+            </div>
+          ` : null}
+
+          <!-- Formatted JSON Payload Accordion -->
+          <details className="mt-4 border border-base-300 rounded-box p-2 bg-base-200/50">
+            <summary className="text-xs font-semibold cursor-pointer opacity-70 select-none">
+              ${isEngine ? 'View Raw JSON Payload' : 'Payload JSON'}
+            </summary>
+            <pre className="mt-2 p-3 bg-base-300 text-base-content rounded text-xs font-mono overflow-auto max-h-60 whitespace-pre">
+${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
+            </pre>
+          </details>
+
+          <div className="modal-action">
+            <button className="btn btn-sm btn-primary" onClick=${onClose}>Close</button>
+          </div>
+        </div>
+        <div className="modal-backdrop" onClick=${onClose}></div>
+      </div>
+    `;
+  }
+
+  // Formatted Detail/Progress Cell
+  function DetailCell({ task, onOpenReport }) {
+    if (task.lastError) {
+      return html`
+        <div className="max-w-72">
+          <span className="text-error font-medium text-xs break-words" title=${task.lastError}>
+            ${task.lastError}
+          </span>
+        </div>
+      `;
+    }
+    if (task.stage) {
+      const prog = parseProgress(task.stage);
+      return html`
+        <div className="flex flex-col gap-1 max-w-72">
+          <span className="font-mono text-info text-xs truncate" title=${task.stage}>${task.stage}</span>
+          ${prog !== null && html`
+            <progress className="progress progress-info w-32 h-1.5" value=${prog} max="100"></progress>
+          `}
+        </div>
+      `;
+    }
+    if (task.reportJSON) {
+      const data = parseJSON(task.reportJSON);
+      if (data && (data.duration_ms || data.video || data.video_bytes)) {
+        return html`
+          <div className="flex flex-wrap items-center gap-1.5 max-w-72">
+            ${data.duration_ms ? html`
+              <span className="badge badge-xs badge-neutral font-mono font-normal">
+                ⏱ ${formatDuration(data.duration_ms)}
+              </span>
+            ` : null}
+            ${data.video_bytes ? html`
+              <span className="badge badge-xs badge-ghost font-mono font-normal">
+                💾 ${formatBytes(data.video_bytes)}
+              </span>
+            ` : null}
+            <button
+              className="btn btn-ghost btn-xs text-primary px-1 hover:underline"
+              onClick=${() => onOpenReport(data)}
+              title="Click to view full report"
+            >
+              Report ↗
+            </button>
+          </div>
+        `;
+      }
+      // Generic JSON or simple object
+      return html`
+        <div className="flex items-center gap-1.5">
+          <span className="badge badge-xs badge-success">Done</span>
+          <button
+            className="btn btn-ghost btn-xs text-primary px-1 hover:underline"
+            onClick=${() => onOpenReport(data || task.reportJSON)}
+          >
+            Report ↗
+          </button>
+        </div>
+      `;
+    }
+    if (task.status === 'queued') {
+      return html`<span className="text-xs opacity-40 italic">Waiting in queue</span>`;
+    }
+    return html`<span className="text-xs opacity-40">--</span>`;
+  }
+
+  function App() {
+    const [theme, setTheme] = useState(() => localStorage.getItem('ac-theme') || 'night');
+    const [tasks, setTasks] = useState([]);
+    const [filter, setFilter] = useState('all');
+    const [search, setSearch] = useState('');
+    const [sortField, setSortField] = useState('created');
+    const [sortAsc, setSortAsc] = useState(false);
+    const [urlInput, setUrlInput] = useState('');
+    const [submitting, setSubmitting] = useState(false);
+    const [formMsg, setFormMsg] = useState(null);
+    const [deleteTarget, setDeleteTarget] = useState(null);
+    const [deleting, setDeleting] = useState(false);
+    const [connState, setConnState] = useState('connecting');
+    const [reportModalData, setReportModalData] = useState(null);
+
+    useEffect(() => {
+      document.documentElement.setAttribute('data-theme', theme);
+      localStorage.setItem('ac-theme', theme);
+    }, [theme]);
+
+    const loadTasks = useCallback(async () => {
+      try {
+        const res = await fetch('/api/tasks?limit=200');
+        if (!res.ok) return;
+        const data = await res.json();
+        setTasks(data || []);
+      } catch (e) {
+        console.error('loadTasks failed', e);
+      }
+    }, []);
+
+    useEffect(() => {
+      let es = null;
+      let reconnectTimer = null;
+      function connect() {
+        setConnState('connecting');
+        es = new EventSource('/api/events');
+        es.addEventListener('ping', () => setConnState('connected'));
+        es.addEventListener('update', () => {
+          setConnState('connected');
+          loadTasks();
+        });
+        es.onerror = () => {
+          setConnState('disconnected');
+          es.close();
+          reconnectTimer = setTimeout(connect, 3000);
+        };
+      }
+      connect();
+      loadTasks();
+      return () => {
+        if (es) es.close();
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+      };
+    }, [loadTasks]);
+
+    const counts = useMemo(() => {
+      const c = { queued: 0, active: 0, done: 0, failed: 0, total: tasks.length };
+      tasks.forEach(t => {
+        if (t.status === 'queued') c.queued++;
+        else if (t.status === 'downloading' || t.status === 'processing') c.active++;
+        else if (t.status === 'done') c.done++;
+        else if (t.status === 'failed') c.failed++;
+      });
+      return c;
+    }, [tasks]);
+
+    const handleAdd = async (e) => {
+      e.preventDefault();
+      const trimmed = urlInput.trim();
+      if (!trimmed) return;
+      setSubmitting(true);
+      setFormMsg(null);
+      try {
+        const res = await fetch('/api/tasks', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: trimmed }),
+        });
+        const data = await res.json();
+        if (res.ok || res.status === 202) {
+          setUrlInput('');
+          setFormMsg({
+            type: res.status === 200 ? 'info' : 'success',
+            text: res.status === 200
+              ? 'Task already exists in queue: ' + (data.recordingID || data.id)
+              : 'Successfully enqueued: ' + (data.recordingID || data.id)
+          });
+          loadTasks();
+        } else {
+          setFormMsg({ type: 'error', text: data.error || 'Failed to enqueue task' });
+        }
+      } catch (err) {
+        setFormMsg({ type: 'error', text: 'Network error: ' + err.message });
+      } finally {
+        setSubmitting(false);
+      }
+    };
+
+    const confirmDelete = async () => {
+      if (!deleteTarget) return;
+      setDeleting(true);
+      try {
+        const res = await fetch('/api/tasks/' + encodeURIComponent(deleteTarget.id), {
+          method: 'DELETE',
+        });
+        if (res.ok) {
+          setFormMsg({ type: 'info', text: 'Task deleted: ' + (deleteTarget.recordingID || deleteTarget.id) });
+          setDeleteTarget(null);
+          loadTasks();
+        } else {
+          const err = await res.json();
+          alert('Delete failed: ' + (err.error || res.statusText));
+        }
+      } catch (err) {
+        alert('Delete network error: ' + err.message);
+      } finally {
+        setDeleting(false);
+      }
+    };
+
+    const filteredTasks = useMemo(() => {
+      return tasks.filter(t => {
+        if (filter === 'queued' && t.status !== 'queued') return false;
+        if (filter === 'active' && t.status !== 'downloading' && t.status !== 'processing') return false;
+        if (filter === 'done' && t.status !== 'done') return false;
+        if (filter === 'failed' && t.status !== 'failed') return false;
+        if (search) {
+          const q = search.toLowerCase();
+          const rec = (t.recordingID || '').toLowerCase();
+          const url = (t.url || '').toLowerCase();
+          const err = (t.lastError || '').toLowerCase();
+          if (!rec.includes(q) && !url.includes(q) && !err.includes(q)) return false;
+        }
+        return true;
+      }).sort((a, b) => {
+        let vA = '', vB = '';
+        if (sortField === 'rec') {
+          vA = a.recordingID || ''; vB = b.recordingID || '';
+        } else if (sortField === 'status') {
+          vA = a.status || ''; vB = b.status || '';
+        } else {
+          vA = a.createdAt || ''; vB = b.createdAt || '';
+        }
+        return (vA < vB ? -1 : vA > vB ? 1 : 0) * (sortAsc ? 1 : -1);
+      });
+    }, [tasks, filter, search, sortField, sortAsc]);
+
+    const handleSort = (field) => {
+      if (sortField === field) {
+        setSortAsc(!sortAsc);
+      } else {
+        setSortField(field);
+        setSortAsc(true);
+      }
+    };
+
+    return html`
+      <div className="mx-auto max-w-6xl px-4 py-6">
+        <!-- Header -->
+        <header className="mb-6 flex flex-wrap items-center justify-between gap-4 border-b border-base-300 pb-4">
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold tracking-tight">ac-rec queue</h1>
+            ${connState === 'connected' && html`
+              <span className="badge badge-sm badge-success gap-1 text-xs">
+                <span className="inline-block h-2 w-2 rounded-full bg-white animate-pulse"></span>
+                Live
+              </span>
+            `}
+            ${connState === 'connecting' && html`
+              <span className="badge badge-sm badge-warning gap-1 text-xs">
+                <span className="inline-block h-2 w-2 rounded-full bg-base-content opacity-50"></span>
+                Connecting...
+              </span>
+            `}
+            ${connState === 'disconnected' && html`
+              <span className="badge badge-sm badge-error gap-1 text-xs">
+                Offline
+              </span>
+            `}
+          </div>
+
+          <div className="flex items-center gap-3">
+            <!-- Theme Selector -->
+            <div className="flex items-center gap-1.5 text-xs opacity-80">
+              <span>Theme:</span>
+              <select
+                className="select select-bordered select-xs"
+                value=${theme}
+                onChange=${e => setTheme(e.target.value)}
+              >
+                ${THEMES.map(t => html`<option key=${t.id} value=${t.id}>${t.label}</option>`)}
+              </select>
+            </div>
+            <a className="btn btn-ghost btn-xs" href="/api/tasks" target="_blank" rel="noopener">JSON API</a>
+          </div>
+        </header>
+
+        <!-- Enqueue Section -->
+        <section className="card bg-base-200 shadow-sm border border-base-300 mb-6">
+          <div className="card-body p-4 gap-2">
+            <h2 className="card-title text-sm font-semibold">Enqueue Recording</h2>
+            <form onSubmit=${handleAdd} className="join w-full">
+              <input
+                name="url"
+                type="url"
+                required
+                placeholder="https://host/pXXXXXXXX/"
+                className="input join-item input-bordered input-sm w-full bg-base-100"
+                value=${urlInput}
+                onInput=${e => setUrlInput(e.target.value)}
+                disabled=${submitting}
+              />
+              <button className="btn btn-primary btn-sm join-item" type="submit" disabled=${submitting}>
+                ${submitting ? 'Adding...' : 'Add Task'}
+              </button>
+            </form>
+
+            ${formMsg && html`
+              <div className=${`alert ${formMsg.type === 'error' ? 'alert-error' : formMsg.type === 'info' ? 'alert-info' : 'alert-success'} py-2 text-xs flex justify-between shadow-sm mt-1`}>
+                <span>${formMsg.text}</span>
+                <button className="btn btn-ghost btn-xs" onClick=${() => setFormMsg(null)}>✕</button>
+              </div>
+            `}
+          </div>
+        </section>
+
+        <!-- Stats Bar (Clickable) -->
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5 mb-4">
+          <div
+            onClick=${() => setFilter(filter === 'queued' ? 'all' : 'queued')}
+            className=${`stat rounded-box bg-base-200 px-4 py-3 shadow-sm border cursor-pointer transition-all hover:bg-base-300 ${filter === 'queued' ? 'border-warning ring-1 ring-warning' : 'border-base-300'}`}
+          >
+            <div className="stat-title text-xs">Queued</div>
+            <div className="stat-value text-2xl text-warning">${counts.queued}</div>
+          </div>
+          <div
+            onClick=${() => setFilter(filter === 'active' ? 'all' : 'active')}
+            className=${`stat rounded-box bg-base-200 px-4 py-3 shadow-sm border cursor-pointer transition-all hover:bg-base-300 ${filter === 'active' ? 'border-info ring-1 ring-info' : 'border-base-300'}`}
+          >
+            <div className="stat-title text-xs">Active</div>
+            <div className="stat-value text-2xl text-info">${counts.active}</div>
+          </div>
+          <div
+            onClick=${() => setFilter(filter === 'done' ? 'all' : 'done')}
+            className=${`stat rounded-box bg-base-200 px-4 py-3 shadow-sm border cursor-pointer transition-all hover:bg-base-300 ${filter === 'done' ? 'border-success ring-1 ring-success' : 'border-base-300'}`}
+          >
+            <div className="stat-title text-xs">Done</div>
+            <div className="stat-value text-2xl text-success">${counts.done}</div>
+          </div>
+          <div
+            onClick=${() => setFilter(filter === 'failed' ? 'all' : 'failed')}
+            className=${`stat rounded-box bg-base-200 px-4 py-3 shadow-sm border cursor-pointer transition-all hover:bg-base-300 ${filter === 'failed' ? 'border-error ring-1 ring-error' : 'border-base-300'}`}
+          >
+            <div className="stat-title text-xs">Failed</div>
+            <div className="stat-value text-2xl text-error">${counts.failed}</div>
+          </div>
+          <div
+            onClick=${() => setFilter('all')}
+            className=${`stat rounded-box bg-base-200 px-4 py-3 shadow-sm border cursor-pointer transition-all hover:bg-base-300 ${filter === 'all' ? 'border-primary ring-1 ring-primary' : 'border-base-300'}`}
+          >
+            <div className="stat-title text-xs">Total</div>
+            <div className="stat-value text-2xl">${counts.total}</div>
+          </div>
+        </div>
+
+        <!-- Filter & Search Controls -->
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+          <div className="flex flex-wrap gap-1.5">
+            <button className=${`btn btn-xs ${filter === 'all' ? 'btn-neutral' : 'btn-ghost'}`} onClick=${() => setFilter('all')}>All (${counts.total})</button>
+            <button className=${`btn btn-xs ${filter === 'active' ? 'btn-info' : 'btn-ghost'}`} onClick=${() => setFilter('active')}>Active (${counts.active})</button>
+            <button className=${`btn btn-xs ${filter === 'queued' ? 'btn-warning' : 'btn-ghost'}`} onClick=${() => setFilter('queued')}>Queued (${counts.queued})</button>
+            <button className=${`btn btn-xs ${filter === 'done' ? 'btn-success' : 'btn-ghost'}`} onClick=${() => setFilter('done')}>Done (${counts.done})</button>
+            <button className=${`btn btn-xs ${filter === 'failed' ? 'btn-error' : 'btn-ghost'}`} onClick=${() => setFilter('failed')}>Failed (${counts.failed})</button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              placeholder="Search ID or URL..."
+              className="input input-bordered input-xs w-48 bg-base-200"
+              value=${search}
+              onInput=${e => setSearch(e.target.value)}
+            />
+            <button className="btn btn-ghost btn-xs" onClick=${loadTasks} title="Refresh data">
+              ↻
+            </button>
+            <span className="text-xs opacity-60">Showing ${filteredTasks.length}</span>
+          </div>
+        </div>
+
+        <!-- Task Table -->
+        <div className="overflow-x-auto rounded-box border border-base-300 bg-base-200/50 shadow-sm">
+          <table className="table table-zebra table-sm">
+            <thead>
+              <tr className="border-b border-base-300">
+                <th><button className="link link-hover" onClick=${() => handleSort('rec')}>Recording ${sortField === 'rec' ? (sortAsc ? '▲' : '▼') : ''}</button></th>
+                <th><button className="link link-hover" onClick=${() => handleSort('status')}>Status ${sortField === 'status' ? (sortAsc ? '▲' : '▼') : ''}</button></th>
+                <th className="text-center">Att.</th>
+                <th>Progress / Detail</th>
+                <th><button className="link link-hover" onClick=${() => handleSort('created')}>Created ${sortField === 'created' ? (sortAsc ? '▲' : '▼') : ''}</button></th>
+                <th>Updated</th>
+                <th>Link</th>
+                <th className="text-center">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${filteredTasks.length === 0 ? html`
+                <tr>
+                  <td colSpan="8" className="py-8 text-center opacity-60 text-xs">
+                    ${tasks.length === 0 ? 'No tasks in queue. Enqueue a recording URL above.' : 'No tasks match current filter/search.'}
+                  </td>
+                </tr>
+              ` : filteredTasks.map(t => {
+                return html`
+                  <tr key=${t.id} className="hover">
+                    <td className="font-mono text-xs max-w-44 truncate" title=${t.id}>
+                      ${t.recordingID}
+                    </td>
+                    <td>
+                      <span className=${`badge badge-sm ${statusBadgeClass(t.status)}`}>
+                        ${t.status}
+                      </span>
+                    </td>
+                    <td className="text-center text-xs font-mono">${t.attempts}</td>
+                    <td className="max-w-72">
+                      <${DetailCell} task=${t} onOpenReport=${(data) => setReportModalData(data)} />
+                    </td>
+                    <td className="whitespace-nowrap text-xs opacity-75">${formatTime(t.createdAt)}</td>
+                    <td className="whitespace-nowrap text-xs opacity-75">${formatTime(t.updatedAt)}</td>
+                    <td>
+                      <a className="link link-primary text-xs" href=${t.url} target="_blank" rel="noopener">open</a>
+                    </td>
+                    <td className="text-center">
+                      <button
+                        className="btn btn-ghost btn-xs text-error hover:bg-error/20"
+                        title="Delete task"
+                        onClick=${() => setDeleteTarget(t)}
+                      >
+                        ✕
+                      </button>
+                    </td>
+                  </tr>
+                `;
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <footer className="mt-6 text-center text-xs opacity-50">
+          ac-rec queue &bull; live real-time sync &bull; stdlib Go backend + React UI
+        </footer>
+
+        <!-- Confirmation Delete Modal -->
+        ${deleteTarget && html`
+          <div className="modal modal-open">
+            <div className="modal-box max-w-md">
+              <h3 className="font-bold text-base text-error flex items-center gap-2">
+                Confirm Deletion
+              </h3>
+              <p className="py-3 text-sm">
+                Are you sure you want to remove recording <strong>${deleteTarget.recordingID}</strong> from the queue?
+              </p>
+              <p className="text-xs opacity-60 font-mono mb-4">Task ID: ${deleteTarget.id}</p>
+              <div className="modal-action">
+                <button className="btn btn-sm btn-ghost" onClick=${() => setDeleteTarget(null)} disabled=${deleting}>
+                  Cancel
+                </button>
+                <button className="btn btn-sm btn-error" onClick=${confirmDelete} disabled=${deleting}>
+                  ${deleting ? 'Deleting...' : 'Delete'}
+                </button>
+              </div>
+            </div>
+            <div className="modal-backdrop" onClick=${() => !deleting && setDeleteTarget(null)}></div>
+          </div>
+        `}
+
+        <!-- Report Details Modal -->
+        ${reportModalData && html`
+          <${ReportModal} data=${reportModalData} onClose=${() => setReportModalData(null)} />
+        `}
+      </div>
+    `;
+  }
+
+  // Mount React app
+  ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(App));
+})();
+</script>
+</body>
+</html>

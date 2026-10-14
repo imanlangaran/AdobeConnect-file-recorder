@@ -5,12 +5,14 @@
 package server
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/recordingurl"
@@ -36,10 +38,53 @@ type Store interface {
 	Get(id string) (t Task, ok bool)
 	List(limit int) []Task
 	Counts() map[string]int
+	Delete(id string) bool
+}
+
+// Subscriber is an optional interface for stores supporting mutation callbacks.
+type Subscriber interface {
+	Subscribe(func())
+}
+
+type hub struct {
+	mu      sync.Mutex
+	clients map[chan struct{}]struct{}
+}
+
+func newHub() *hub {
+	return &hub{clients: make(map[chan struct{}]struct{})}
+}
+
+func (h *hub) broadcast() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for ch := range h.clients {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (h *hub) register(ch chan struct{}) {
+	h.mu.Lock()
+	h.clients[ch] = struct{}{}
+	h.mu.Unlock()
+}
+
+func (h *hub) unregister(ch chan struct{}) {
+	h.mu.Lock()
+	delete(h.clients, ch)
+	h.mu.Unlock()
 }
 
 // New wires the routes and returns the handler.
 func New(store Store) http.Handler {
+	h := newHub()
+	if sub, ok := store.(Subscriber); ok {
+		sub.Subscribe(h.broadcast)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/tasks", func(w http.ResponseWriter, r *http.Request) {
 		raw := strings.TrimSpace(r.FormValue("url"))
@@ -67,11 +112,49 @@ func New(store Store) http.Handler {
 			respondTaskErr(w, r, http.StatusInternalServerError, "enqueue failed")
 			return
 		}
+		h.broadcast()
 		code := http.StatusAccepted
 		if existed {
 			code = http.StatusOK
 		}
 		respondTaskOK(w, r, code, t, existed)
+	})
+	mux.HandleFunc("DELETE /api/tasks/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if !store.Delete(id) {
+			writeErr(w, http.StatusNotFound, "task not found")
+			return
+		}
+		h.broadcast()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": id})
+	})
+	mux.HandleFunc("GET /api/events", func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+
+		ch := make(chan struct{}, 1)
+		h.register(ch)
+		defer h.unregister(ch)
+
+		fmt.Fprintf(w, "event: ping\ndata: connected\n\n")
+		flusher.Flush()
+
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			case <-ch:
+				fmt.Fprintf(w, "event: update\ndata: {}\n\n")
+				flusher.Flush()
+			}
+		}
 	})
 	mux.HandleFunc("GET /api/tasks", func(w http.ResponseWriter, r *http.Request) {
 		limit := 200
@@ -278,62 +361,5 @@ const dashFragment = `
 </table>
 </div>`
 
-// pageShell is the full page: CDN libs, add-form, and the htmx live region.
-const pageShell = `<!doctype html>
-<html lang="en" data-theme="light"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ac-rec queue</title>
-<script src="https://cdn.tailwindcss.com"></script>
-<link href="https://cdn.jsdelivr.net/npm/daisyui@4.12.10/dist/full.min.css" rel="stylesheet">
-<script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.4/dist/htmx.min.js"></script>
-</head><body class="min-h-screen bg-base-100">
-<div class="mx-auto max-w-6xl px-4 py-6">
-<header class="mb-4 flex flex-wrap items-baseline gap-3">
-<h1 class="text-2xl font-bold">ac-rec queue</h1>
-<a class="link link-primary text-sm" href="/api/tasks">JSON API</a>
-<span class="badge badge-ghost badge-sm" id="health">checking...</span>
-</header>
-<section class="card bg-base-200 shadow">
-<div class="card-body gap-2 p-4">
-<h2 class="card-title text-base">Enqueue recording</h2>
-<form id="add-form" hx-post="/api/tasks" hx-target="#form-msg" hx-swap="innerHTML"
-  class="join w-full">
-<input name="url" type="url" required placeholder="https://host/pXXXXXXXX/"
-  class="input join-item input-bordered input-sm w-full" autocomplete="off">
-<button class="btn btn-primary btn-sm join-item" type="submit">Add</button>
-</form>
-<div id="form-msg" aria-live="polite"></div>
-<p class="text-xs opacity-60">Duplicates return the existing task instead of re-adding.</p>
-</div>
-</section>
-<section class="mt-4" id="live" hx-get="/partials/dashboard" hx-trigger="load, every 3s, refresh" hx-swap="innerHTML">
-` + dashFragment + `
-</section>
-<footer class="mt-6 text-center text-xs opacity-50">ac-rec queue - auto-refresh 3s - showing up to 200 newest</footer>
-</div>
-<script>
-// Health dot (fetch API): green/red badge, polled with the dashboard.
-async function health(){try{const r=await fetch('/healthz');const h=document.getElementById('health');if(!h)return;
-h.textContent=r.ok?'online':'down';h.className='badge badge-sm '+(r.ok?'badge-success':'badge-error');}catch(e){}}
-health();setInterval(health,10000);
-// Client state (filter + sort) survives htmx swaps via re-apply on load.
-let curFilter='all',curSort=null,sortDir=1;
-function applyFilter(){let n=0;document.querySelectorAll('#tasks tbody tr[data-status]').forEach(tr=>{
-const st=tr.dataset.status,show=curFilter==='all'||st===curFilter||(curFilter==='active'&&(st==='downloading'||st==='processing'));
-tr.style.display=show?'':'none';if(show)n++;});
-document.getElementById('shown').textContent=n+' shown';}
-function applySort(){if(!curSort)return;const tb=document.querySelector('#tasks tbody');if(!tb)return;
-[...tb.rows].filter(r=>r.dataset.status).sort((a,b)=>{const x=a.dataset[curSort]||'',y=b.dataset[curSort]||'';
-return (x<y?-1:x>y?1:0)*sortDir;}).forEach(r=>tb.appendChild(r));}
-document.addEventListener('click',e=>{
-const f=e.target.closest('.filter-btn');if(f){curFilter=f.dataset.filter;
-document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('btn-active'));f.classList.add('btn-active');applyFilter();return;}
-const s=e.target.closest('.sort-btn');if(s){const k=s.dataset.sort;
-if(curSort===k){sortDir*=-1;}else{curSort=k;sortDir=1;}applySort();}});
-function syncFilterUI(){document.querySelectorAll('.filter-btn').forEach(b=>b.classList.toggle('btn-active',b.dataset.filter===curFilter));}
-document.body.addEventListener('htmx:afterSwap',e=>{if(e.target.id==='live'){syncFilterUI();applyFilter();applySort();}});
-document.body.addEventListener('htmx:afterRequest',e=>{if(e.target.id!=='add-form')return;
-if(e.detail.successful&&e.detail.xhr.responseText.indexOf('alert-error')===-1){e.target.reset();htmx.trigger('#live','refresh');}});
-syncFilterUI();applyFilter();
-</script>
-</body></html>`
+//go:embed index.html
+var pageShell string

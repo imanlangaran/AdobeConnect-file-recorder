@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestEnqueueDedupeClaimSetDoneList(t *testing.T) {
@@ -208,5 +209,38 @@ func TestSetStage(t *testing.T) {
 	got, _ = s.Get(task.ID)
 	if got.Stage != "" {
 		t.Fatalf("SetDone must clear stage, got %q", got.Stage)
+	}
+}
+
+func TestDeleteAndSubscribe(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	updated := make(chan struct{}, 5)
+	s.Subscribe(func() {
+		updated <- struct{}{}
+	})
+
+	task, _, err := s.Enqueue("https://example.test/r1", "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-updated:
+	case <-time.After(time.Second):
+		t.Fatal("expected subscribe notification on enqueue")
+	}
+
+	if err := s.Delete(task.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := s.Get(task.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("task should be deleted, got err=%v", err)
+	}
+	if err := s.Delete("non-existent"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Delete non-existent want ErrNotFound, got %v", err)
 	}
 }
