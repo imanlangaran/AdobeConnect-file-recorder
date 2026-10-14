@@ -54,7 +54,7 @@ func (o *Options) withDefaults() {
 // (GET /api/xml?action=login) and returns the session cookies
 // (BreezeLoginCookie/BREEZESESSION) set by a successful login.
 func Login(ctx context.Context, client *http.Client, origin, username, password string) ([]*http.Cookie, error) {
-	u := fmt.Sprintf("%s/api/xml?action=login&username=%s&password=%s",
+	u := fmt.Sprintf("%s/api/xml?action=login&login=%s&password=%s",
 		strings.TrimRight(origin, "/"),
 		url.QueryEscape(username), url.QueryEscape(password))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
@@ -74,8 +74,8 @@ func Login(ctx context.Context, client *http.Client, origin, username, password 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("login: HTTP %d", resp.StatusCode)
 	}
-	if !bytes.Contains(body, []byte("<login-ok")) {
-		return nil, ErrLogin
+	if !bytes.Contains(body, []byte(`code="ok"`)) && !bytes.Contains(body, []byte("<login-ok")) {
+		return nil, fmt.Errorf("%w: %s", ErrLogin, string(body))
 	}
 	return resp.Cookies(), nil
 }
