@@ -179,3 +179,34 @@ func TestPruneTerminal(t *testing.T) {
 		t.Fatalf("prune must keep active rows: %+v %v", got, err)
 	}
 }
+
+func TestSetStage(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	task, _, err := s.Enqueue("https://example.test/r1", "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetStage(task.ID, "download 50%"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Stage != "download 50%" {
+		t.Fatalf("Stage = %q, want 'download 50%%'", got.Stage)
+	}
+	// SetDone clears stage
+	if err := s.SetDone(task.ID, "{}"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.Get(task.ID)
+	if got.Stage != "" {
+		t.Fatalf("SetDone must clear stage, got %q", got.Stage)
+	}
+}

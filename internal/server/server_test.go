@@ -164,3 +164,19 @@ func TestStatusPageHasTable(t *testing.T) {
 		t.Fatal("status page must not meta-refresh (htmx polls instead)")
 	}
 }
+
+func TestDashboardShowsStage(t *testing.T) {
+	st := newFake()
+	task, _, _ := st.Enqueue("https://example.adobeconnect.com/p15rdeovw4ge/", "p15rdeovw4ge")
+	st.tasks[0].Stage = "reconstructing 42%"
+	st.byID[task.ID] = st.tasks[0]
+	h := New(st)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/partials/dashboard", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "reconstructing 42%") {
+		t.Fatalf("dashboard missing stage: %s", rec.Body.String())
+	}
+}

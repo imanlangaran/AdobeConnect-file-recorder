@@ -86,3 +86,23 @@ func TestQueueAdapterDedupeFlag(t *testing.T) {
 		t.Fatalf("adapter must return server.Task, got %T", got)
 	}
 }
+
+func TestFormatStage(t *testing.T) {
+	tests := []struct {
+		stage string
+		done  int64
+		total int64
+		want  string
+	}{
+		{"download", 50 * (1 << 20), 100 * (1 << 20), "download 50% (50.0/100.0 MB)"},
+		{"download", 10 * (1 << 20), 0, "download 10.0 MB"},
+		{"reconstruct", 30000, 60000, "reconstruct 50% (0:30/1:00)"},
+		{"reconstruct", 45000, 0, "reconstruct 0:45"},
+	}
+	for _, tt := range tests {
+		got := formatStage(tt.stage, tt.done, tt.total)
+		if got != tt.want {
+			t.Errorf("formatStage(%q, %d, %d) = %q, want %q", tt.stage, tt.done, tt.total, got, tt.want)
+		}
+	}
+}

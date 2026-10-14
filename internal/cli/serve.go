@@ -120,7 +120,21 @@ func worker(ctx context.Context, store *queue.Store, cfg config.Config) {
 }
 
 func processTask(ctx context.Context, store *queue.Store, cfg config.Config, task queue.Task, w, h int) {
-	status := func(s string) { fmt.Fprintf(os.Stderr, "[%s] %s\n", task.ID, s) }
+	var lastStageUpdate time.Time
+	var lastStageStr string
+	setStage := func(s string, force bool) {
+		now := time.Now()
+		if !force && s == lastStageStr && now.Sub(lastStageUpdate) < 1*time.Second {
+			return
+		}
+		lastStageUpdate = now
+		lastStageStr = s
+		_ = store.SetStage(task.ID, s)
+	}
+	status := func(s string) {
+		fmt.Fprintf(os.Stderr, "[%s] %s\n", task.ID, s)
+		setStage(s, true)
+	}
 	ru, err := recordingurl.Parse(task.URL)
 	if err != nil {
 		failTask(ctx, store, cfg, task, err)
@@ -133,6 +147,7 @@ func processTask(ctx context.Context, store *queue.Store, cfg config.Config, tas
 	if err := store.SetStatus(task.ID, queue.StatusProcessing, ""); err != nil {
 		status(fmt.Sprintf("set processing: %v", err))
 	}
+	setStage("starting", true)
 	rep, err := engine.Run(ctx, engine.Options{
 		ZipURL:   ru.ZipURL(),
 		Title:    title,
@@ -146,6 +161,9 @@ func processTask(ctx context.Context, store *queue.Store, cfg config.Config, tas
 		Username: cfg.ACUsername,
 		Password: cfg.ACPassword,
 		Status:   status,
+		Progress: func(stage string, done, total int64) {
+			setStage(formatStage(stage, done, total), false)
+		},
 		// Retries must start clean: a crash after recording.mp4 was written
 		// would otherwise fail with "output already exists".
 		Overwrite: true,
@@ -166,10 +184,28 @@ func processTask(ctx context.Context, store *queue.Store, cfg config.Config, tas
 	status(fmt.Sprintf("done: %s", rep.VideoPath))
 }
 
+// formatStage renders a human-friendly progress label for the dashboard.
+func formatStage(stage string, done, total int64) string {
+	if stage == "download" || stage == "extract" {
+		if total > 0 {
+			return fmt.Sprintf("%s %.0f%% (%.1f/%.1f MB)", stage,
+				float64(done)/float64(total)*100,
+				float64(done)/(1<<20), float64(total)/(1<<20))
+		}
+		return fmt.Sprintf("%s %.1f MB", stage, float64(done)/(1<<20))
+	}
+	if total > 0 {
+		return fmt.Sprintf("%s %.0f%% (%s/%s)", stage,
+			float64(done)/float64(total)*100, fmtDur(done), fmtDur(total))
+	}
+	return fmt.Sprintf("%s %s", stage, fmtDur(done))
+}
+
 // failTask requeues while attempts remain (Claim counts them), else fails.
 // ponytail: fixed 5s backoff; add jitter/exponential growth if retries hammer the server.
 func failTask(ctx context.Context, store *queue.Store, cfg config.Config, task queue.Task, err error) {
 	fmt.Fprintf(os.Stderr, "[%s] failed (attempt %d): %v\n", task.ID, task.Attempts, err)
+	_ = store.SetStage(task.ID, "")
 	if ctx.Err() == nil && task.Attempts > cfg.RetryCount {
 		if serr := store.SetStatus(task.ID, queue.StatusFailed, err.Error()); serr != nil {
 			fmt.Fprintf(os.Stderr, "[%s] set failed: %v\n", task.ID, serr)
@@ -243,7 +279,7 @@ func (a queueAdapter) Counts() map[string]int {
 func toServerTask(t queue.Task) server.Task {
 	return server.Task{
 		ID: t.ID, URL: t.URL, RecordingID: t.RecordingID,
-		Status: string(t.Status), Attempts: t.Attempts,
+		Status: string(t.Status), Stage: t.Stage, Attempts: t.Attempts,
 		LastError: t.LastError, ReportJSON: t.ReportJSON,
 		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
 	}

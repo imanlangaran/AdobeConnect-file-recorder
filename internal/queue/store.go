@@ -36,6 +36,7 @@ type Task struct {
 	URL         string    `json:"url"`
 	RecordingID string    `json:"recording_id"`
 	Status      Status    `json:"status"`
+	Stage       string    `json:"stage,omitempty"`
 	Attempts    int       `json:"attempts"`
 	LastError   string    `json:"last_error,omitempty"`
 	ReportJSON  string    `json:"report_json,omitempty"`
@@ -127,6 +128,7 @@ func (s *Store) Claim() (Task, bool) {
 		return Task{}, false
 	}
 	tasks[best].Status = StatusDownloading
+	tasks[best].Stage = ""
 	tasks[best].Attempts++
 	tasks[best].UpdatedAt = time.Now().UTC()
 	if err := s.saveLocked(tasks); err != nil {
@@ -139,7 +141,18 @@ func (s *Store) Claim() (Task, bool) {
 func (s *Store) SetStatus(id string, st Status, lastErr string) error {
 	return s.update(id, func(t *Task) {
 		t.Status = st
+		if st == StatusFailed || st == StatusQueued {
+			t.Stage = ""
+		}
 		t.LastError = lastErr
+		t.UpdatedAt = time.Now().UTC()
+	})
+}
+
+// SetStage updates a task's current execution stage without changing its status.
+func (s *Store) SetStage(id, stage string) error {
+	return s.update(id, func(t *Task) {
+		t.Stage = stage
 		t.UpdatedAt = time.Now().UTC()
 	})
 }
@@ -148,6 +161,7 @@ func (s *Store) SetStatus(id string, st Status, lastErr string) error {
 func (s *Store) SetDone(id, reportJSON string) error {
 	return s.update(id, func(t *Task) {
 		t.Status = StatusDone
+		t.Stage = ""
 		t.LastError = ""
 		t.ReportJSON = reportJSON
 		t.UpdatedAt = time.Now().UTC()
@@ -173,6 +187,7 @@ func (s *Store) RequeueActive() (int, error) {
 		}
 		was := tasks[i].Status
 		tasks[i].Status = StatusQueued
+		tasks[i].Stage = ""
 		if tasks[i].LastError == "" {
 			tasks[i].LastError = "requeued after restart (was " + string(was) + ")"
 		}

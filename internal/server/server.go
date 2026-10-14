@@ -22,6 +22,7 @@ type Task struct {
 	URL         string    `json:"url"`
 	RecordingID string    `json:"recordingID"`
 	Status      string    `json:"status"`
+	Stage       string    `json:"stage,omitempty"`
 	Attempts    int       `json:"attempts"`
 	LastError   string    `json:"lastError"`
 	ReportJSON  string    `json:"reportJSON,omitempty"`
@@ -259,7 +260,7 @@ const dashFragment = `
 <table class="table table-zebra table-sm" id="tasks">
 <thead><tr>
 <th><button class="sort-btn link link-hover" data-sort="rec">Recording (sort)</button></th>
-<th>Status</th><th>Att.</th><th>Error / detail</th>
+<th>Status</th><th>Att.</th><th>State / Detail</th>
 <th><button class="sort-btn link link-hover" data-sort="created">Created (sort)</button></th>
 <th>Updated</th><th>Link</th>
 </tr></thead>
@@ -268,7 +269,7 @@ const dashFragment = `
 <td class="max-w-44 truncate font-mono text-xs" title="{{.ID}}">{{.RecordingID}}</td>
 <td><span class="badge badge-sm {{badge .Status}}">{{.Status}}</span></td>
 <td class="text-center">{{.Attempts}}</td>
-<td class="max-w-72 truncate text-xs opacity-80" title="{{.LastError}}">{{if .LastError}}{{.LastError}}{{else if .ReportJSON}}<details><summary class="link">report</summary><pre class="whitespace-pre-wrap text-xs">{{.ReportJSON}}</pre></details>{{else}}--{{end}}</td>
+<td class="max-w-72 truncate text-xs opacity-80" title="{{if .LastError}}{{.LastError}}{{else if .Stage}}{{.Stage}}{{end}}">{{if .LastError}}<span class="text-error">{{.LastError}}</span>{{else if .Stage}}<span class="font-mono text-info">{{.Stage}}</span>{{else if .ReportJSON}}<details><summary class="link">report</summary><pre class="whitespace-pre-wrap text-xs">{{.ReportJSON}}</pre></details>{{else}}--{{end}}</td>
 <td class="whitespace-nowrap text-xs" title="{{.CreatedAt}}">{{ftime .CreatedAt}}</td>
 <td class="whitespace-nowrap text-xs" title="{{.UpdatedAt}}">{{ftime .UpdatedAt}}</td>
 <td><a class="link link-primary text-xs" href="{{.URL}}" target="_blank" rel="noopener">open</a></td>
