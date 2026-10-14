@@ -2,10 +2,13 @@ MODULE := github.com/iman-langaran/AdobeConnect-file-recorder
 VERSION := $(shell cat VERSION)
 LDFLAGS := -X $(MODULE)/internal/version.Version=$(VERSION)
 
-.PHONY: build test vet fmt version release-check
+.PHONY: build test vet fmt version release-check docker-build
 
 build:
 	go build -ldflags "$(LDFLAGS)" -o bin/ac-rec ./cmd/ac-rec
+
+docker-build:
+	docker build --build-arg VERSION=$(VERSION) -t ac-rec:$(VERSION) .
 
 test:
 	go test ./...

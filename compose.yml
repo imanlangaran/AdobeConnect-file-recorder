@@ -1,0 +1,15 @@
+services:
+  ac-rec:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      OUT_DIR: /recordings
+    volumes:
+      - ./data:/data
+      - ./recordings:/recordings
