@@ -1,6 +1,7 @@
 /bin/
 /dist/
 /recordings/
+/data/
 *.part
 .env
 fps12/
