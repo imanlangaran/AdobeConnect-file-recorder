@@ -25,6 +25,7 @@ const usage = `ac-rec — Adobe Connect offline recording downloader/reconstruct
 Usage:
   ac-rec download <recording-url> [flags]     download archive + reconstruct
   ac-rec reconstruct <archive.zip> [flags]    reconstruct from a local ZIP
+  ac-rec serve [--env .env]   run queue workers + status page
 
 Flags:
   --session <tok>     BREEZESESSION cookie value (logged-in session)
@@ -39,6 +40,9 @@ Flags:
   --crf <n>           x264 quality; higher = faster/softer (default 23)
   --raw               full-frame video at source resolution (skip layout)
   --version           print version and exit
+
+Serve options:
+  --env <path>      .env config file for serve (default .env)
 
 Download auth: --session <tok> / --cookie, or a .env file in the current
 directory with AC_USERNAME=… and AC_PASSWORD=… (or USERNAME=… / PASSWORD=…);
@@ -60,6 +64,8 @@ func Main(args []string) int {
 	cmd, rest := args[1], args[2:]
 
 	switch cmd {
+	case "serve":
+		return runServe(rest)
 	case "download", "reconstruct":
 	case "-v", "--version", "version":
 		fmt.Printf("ac-rec %s\n", version.Version)
