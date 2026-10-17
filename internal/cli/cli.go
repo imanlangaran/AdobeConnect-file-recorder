@@ -6,8 +6,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"regexp"
@@ -15,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/download"
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/engine"
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/recordingurl"
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/version"
@@ -165,7 +168,7 @@ func Main(args []string) int {
 		}
 		opt.ZipURL = ru.ZipURL()
 		if opt.Title == "" {
-			opt.Title = fetchTitle(ctx, ru.PageURL(), *session, cookies.cookies())
+			opt.Title = fetchTitle(ctx, ru.PageURL(), *session, cookies.cookies(), envUser, envPass)
 		}
 		if opt.Title == "" { // page unreachable/unauthorized → recording id as name
 			opt.Title = ru.ID
@@ -295,8 +298,17 @@ func (c cookieList) cookies() []*http.Cookie {
 
 var titleRe = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
 
-// fetchTitle grabs the recording page title (best-effort; falls back to id).
-func fetchTitle(ctx context.Context, pageURL, session string, cookies []*http.Cookie) string {
+// fetchTitle grabs the recording page title (best-effort; "" when unreachable
+// or unauthorized). Adobe Connect titles are HTML-entity encoded and the page
+// needs auth, so with credentials it logs in first and unescapes the entities;
+// an unauthenticated answer is the login page, which is rejected.
+func fetchTitle(ctx context.Context, pageURL, session string, cookies []*http.Cookie, user, pass string) string {
+	client := &http.Client{Timeout: 20 * time.Second}
+	if user != "" && session == "" {
+		if cs, err := download.Login(ctx, client, originOf(pageURL), user, pass); err == nil {
+			cookies = append(append([]*http.Cookie{}, cookies...), cs...)
+		}
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
 	if err != nil {
 		return ""
@@ -308,7 +320,6 @@ func fetchTitle(ctx context.Context, pageURL, session string, cookies []*http.Co
 	for _, c := range cookies {
 		req.AddCookie(c)
 	}
-	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return ""
@@ -321,11 +332,14 @@ func fetchTitle(ctx context.Context, pageURL, session string, cookies []*http.Co
 	if err != nil {
 		return ""
 	}
+	if strings.Contains(string(body), `action="/system/login`) { // login page
+		return ""
+	}
 	m := titleRe.FindSubmatch(body)
 	if m == nil {
 		return ""
 	}
-	title := strings.TrimSpace(string(m[1]))
+	title := strings.Join(strings.Fields(html.UnescapeString(string(m[1]))), " ")
 	for _, suf := range []string{" | Adobe Connect", " - Adobe Connect", " · Adobe Connect"} {
 		title = strings.TrimSuffix(title, suf)
 	}
@@ -334,6 +348,15 @@ func fetchTitle(ctx context.Context, pageURL, session string, cookies []*http.Co
 		return ""
 	}
 	return title
+}
+
+// originOf returns scheme://host for a page URL (login endpoint origin).
+func originOf(pageURL string) string {
+	u, err := url.Parse(pageURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return pageURL
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 func fmtDur(ms int64) string {

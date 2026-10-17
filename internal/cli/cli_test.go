@@ -2,6 +2,10 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,6 +73,99 @@ func TestReadEnvFile(t *testing.T) {
 	if _, _, err = readEnvFile(path); err == nil {
 		t.Error("missing credentials must be an error")
 	}
+}
+
+// TestFetchTitle: the page title (entity-encoded, behind login) becomes the
+// output name; the login page itself must never be used as a title.
+func TestFetchTitle(t *testing.T) {
+	const want = "تصویر پردازی رقمی (صدقی یزدی - گروه 200)_0"
+	// numeric character references, exactly as Adobe Connect serves them
+	var encoded strings.Builder
+	for _, r := range want {
+		fmt.Fprintf(&encoded, "&#%d;", r)
+	}
+	loggedIn := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/xml": // login endpoint
+			if r.URL.Query().Get("action") != "login" || r.URL.Query().Get("password") != "pw" {
+				fmt.Fprint(w, `<results><status code="denied"/></results>`)
+				return
+			}
+			loggedIn = true
+			http.SetCookie(w, &http.Cookie{Name: "BREEZESESSION", Value: "s1"})
+			fmt.Fprint(w, `<results><status code="ok"/></results>`)
+		case "/rec/":
+			c, err := r.Cookie("BREEZESESSION")
+			if err != nil || c.Value != "s1" { // unauthenticated → login page
+				fmt.Fprint(w, `<html><head><title>Adobe Connect Central Login</title></head>`+
+					`<body><form action="/system/login-guest?account-id=7"></form></body></html>`)
+				return
+			}
+			fmt.Fprintf(w, "<html><head><title>%s</title></head></html>", encoded.String())
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	ctx := context.Background()
+
+	// no creds → login page → no title (fallback happens at the call site)
+	if got := fetchTitle(ctx, srv.URL+"/rec/", "", nil, "", ""); got != "" {
+		t.Errorf("unauthenticated: got %q, want empty", got)
+	}
+	// bad creds → login refused → still no title
+	if got := fetchTitle(ctx, srv.URL+"/rec/", "", nil, "u", "wrong"); got != "" {
+		t.Errorf("bad creds: got %q, want empty", got)
+	}
+	// good creds → logged in → decoded title
+	got := fetchTitle(ctx, srv.URL+"/rec/", "", nil, "u", "pw")
+	if !loggedIn {
+		t.Fatal("fetchTitle did not log in with credentials")
+	}
+	if got != want {
+		t.Errorf("fetchTitle = %q, want %q", got, want)
+	}
+}
+
+// TestFetchTitleStripsAdobeConnectSuffix: platform chrome is not part of the name.
+func TestFetchTitleStripsAdobeConnectSuffix(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, "<html><head><title>Week 3 | Adobe Connect</title></head></html>")
+	}))
+	defer srv.Close()
+	if got := fetchTitle(context.Background(), srv.URL+"/", "", nil, "", ""); got != "Week 3" {
+		t.Errorf("fetchTitle = %q, want %q", got, "Week 3")
+	}
+}
+
+// TestFetchTitleLive checks the real recording page. Skipped unless
+// AC_LIVE_URL is set (e.g. AC_LIVE_URL=https://webinar5.um.ac.ir/p15rdeovw4ge/)
+// because it needs network + credentials from ./.env.
+func TestFetchTitleLive(t *testing.T) {
+	page := os.Getenv("AC_LIVE_URL")
+	if page == "" {
+		t.Skip("AC_LIVE_URL not set")
+	}
+	// test cwd is internal/cli → walk up to the repo root where .env lives
+	var u, p string
+	for _, path := range []string{".env", "../.env", "../../.env"} {
+		if user, pass, err := readEnvFile(path); err == nil && user != "" {
+			u, p = user, pass
+			break
+		}
+	}
+	if u == "" {
+		t.Skip("no credentials found for AC_LIVE_URL test")
+	}
+	got := fetchTitle(context.Background(), page, "", nil, u, p)
+	if got == "" {
+		t.Fatal("empty title from live page (auth or parsing broken)")
+	}
+	if strings.Contains(got, "&#") || strings.EqualFold(got, "Adobe Connect Central Login") {
+		t.Errorf("title not usable as a name: %q", got)
+	}
+	t.Logf("live title: %s", got)
 }
 
 func TestNewProgressLabels(t *testing.T) {

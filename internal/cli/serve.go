@@ -141,7 +141,12 @@ func processTask(ctx context.Context, store *queue.Store, cfg config.Config, tas
 		failTask(ctx, store, cfg, task, err)
 		return
 	}
-	title := task.RecordingID
+	// Output name is the recording's real title (the page <title>); the URL
+	// slug only backs it up when the page is unreachable/unauthorized.
+	title := fetchTitle(ctx, ru.PageURL(), "", nil, cfg.ACUsername, cfg.ACPassword)
+	if title == "" {
+		title = task.RecordingID
+	}
 	if title == "" {
 		title = ru.ID
 	}
