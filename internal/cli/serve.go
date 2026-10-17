@@ -253,36 +253,34 @@ type queueAdapter struct {
 }
 
 func (a queueAdapter) Enqueue(url, recordingID string) (server.Task, bool, error) {
+	// Resolve the parent folder BEFORE the task is persisted: a task saved
+	// without its group can be claimed by a worker in the meantime and would
+	// output flat instead of into its class folder.
+	folderID, folderName, group := a.resolve(url)
 	// queue.Enqueue reports dedupe hits atomically under its own lock.
-	t, existed, err := a.q.Enqueue(url, recordingID)
+	t, existed, err := a.q.EnqueueGrouped(url, recordingID, folderID, folderName, group)
 	if err != nil {
 		return server.Task{}, false, err
-	}
-	if !existed {
-		a.group(t)
-		if nt, err := a.q.Get(t.ID); err == nil {
-			t = nt
-		}
 	}
 	return toServerTask(t), existed, nil
 }
 
-// group resolves the parent folder (meeting SCO) for a freshly registered
-// task and creates its output directory. Best-effort: failures leave the task
-// ungrouped and the recording lands in the _unfiled group.
-func (a queueAdapter) group(t queue.Task) {
+// resolve maps a recording URL to its parent folder (meeting SCO) and creates
+// the output directory. Best-effort: failures yield empty values and the
+// recording lands in the _unfiled group.
+func (a queueAdapter) resolve(url string) (folderID, folderName, group string) {
 	if a.cfg.ACUsername == "" {
-		return // no credentials: cannot resolve, recording would not download either
+		return "", "", "" // no credentials: cannot resolve, recording would not download either
 	}
 	// The HTTP handler must not block on the API for long.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	ru, err := recordingurl.Parse(t.URL)
+	ru, err := recordingurl.Parse(url)
 	if err != nil {
-		return
+		return "", "", ""
 	}
-	folderID, folderName := resolveFolder(ctx, ru.PageURL(), a.cfg.ACUsername, a.cfg.ACPassword)
-	_ = a.q.SetGroup(t.ID, folderID, folderName, ensureGroup(a.cfg.OutDir, folderID, folderName))
+	folderID, folderName = resolveFolder(ctx, ru.PageURL(), a.cfg.ACUsername, a.cfg.ACPassword)
+	return folderID, folderName, ensureGroup(a.cfg.OutDir, folderID, folderName)
 }
 
 func (a queueAdapter) Get(id string) (server.Task, bool) {

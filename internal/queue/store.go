@@ -88,7 +88,14 @@ func Open(dataDir string) (*Store, error) {
 // (dedupe: a URL already queued, downloading, or processing is not re-added).
 // existed reports whether the returned task predates this call, so callers
 // can answer 200 (duplicate) vs 202 (new) without a separate scan.
-func (s *Store) Enqueue(url, recordingID string) (t Task, existed bool, err error) {
+func (s *Store) Enqueue(url, recordingID string) (Task, bool, error) {
+	return s.EnqueueGrouped(url, recordingID, "", "", "")
+}
+
+// EnqueueGrouped registers a task already resolved to its parent folder. The
+// group must be set here, not after: a task persisted ungrouped can be claimed
+// by a worker before a later SetGroup and would output to the wrong directory.
+func (s *Store) EnqueueGrouped(url, recordingID, folderID, folderName, group string) (t Task, existed bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tasks, err := s.loadLocked()
@@ -101,7 +108,9 @@ func (s *Store) Enqueue(url, recordingID string) (t Task, existed bool, err erro
 		}
 	}
 	now := time.Now().UTC()
-	t = Task{ID: s.newID(now), URL: url, RecordingID: recordingID, Status: StatusQueued, CreatedAt: now, UpdatedAt: now}
+	t = Task{ID: s.newID(now), URL: url, RecordingID: recordingID,
+		FolderID: folderID, FolderName: folderName, Group: group,
+		Status: StatusQueued, CreatedAt: now, UpdatedAt: now}
 	tasks = append(tasks, t)
 	if err := s.saveLocked(tasks); err != nil {
 		return Task{}, false, err
@@ -157,18 +166,6 @@ func (s *Store) SetStatus(id string, st Status, lastErr string) error {
 func (s *Store) SetStage(id, stage string) error {
 	return s.update(id, func(t *Task) {
 		t.Stage = stage
-		t.UpdatedAt = time.Now().UTC()
-	})
-}
-
-// SetGroup records the parent folder (meeting SCO) a task's recordings are
-// grouped under: the machine id, its human name, and the resolved output
-// subdirectory. Any of the three may be empty (unresolved → _unfiled).
-func (s *Store) SetGroup(id, folderID, folderName, group string) error {
-	return s.update(id, func(t *Task) {
-		t.FolderID = folderID
-		t.FolderName = folderName
-		t.Group = group
 		t.UpdatedAt = time.Now().UTC()
 	})
 }

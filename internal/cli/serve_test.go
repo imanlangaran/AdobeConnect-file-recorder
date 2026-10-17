@@ -3,6 +3,11 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/config"
@@ -84,6 +89,48 @@ func TestQueueAdapterDedupeFlag(t *testing.T) {
 	}
 	if _, ok := interface{}(got).(server.Task); !ok {
 		t.Fatalf("adapter must return server.Task, got %T", got)
+	}
+}
+
+// TestEnqueueTaskIsBornGrouped: a claimed task must already carry its group —
+// persisting it ungrouped lets a worker claim it before folder resolution
+// finishes, and the recording then lands flat instead of in its class folder.
+func TestEnqueueTaskIsBornGrouped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/xml" && r.URL.Query().Get("action") == "login":
+			http.SetCookie(w, &http.Cookie{Name: "BREEZESESSION", Value: "s1"})
+			fmt.Fprint(w, `<results><status code="ok"/></results>`)
+		case r.URL.Path == "/api/xml" && r.URL.Query().Get("sco-id") == "223446":
+			fmt.Fprint(w, `<results><status code="ok"/><sco folder-id="44063" sco-id="223446"><name>x_0</name></sco></results>`)
+		case r.URL.Path == "/api/xml" && r.URL.Query().Get("sco-id") == "44063":
+			fmt.Fprint(w, `<results><status code="ok"/><sco sco-id="44063"><name>Class 200</name></sco></results>`)
+		case r.URL.Path == "/rec/":
+			fmt.Fprint(w, `<html><script>var eventSco = "223446";</script></html>`)
+		default:
+			http.Error(w, "no-access", http.StatusForbidden)
+		}
+	}))
+	defer srv.Close()
+
+	out := t.TempDir()
+	s, err := queue.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := queueAdapter{q: s, cfg: config.Config{ACUsername: "u", ACPassword: "p", OutDir: out}}
+	if _, existed, err := a.Enqueue(srv.URL+"/rec/", "r1"); err != nil || existed {
+		t.Fatalf("enqueue: existed=%v err=%v", existed, err)
+	}
+	claimed, ok := s.Claim()
+	if !ok {
+		t.Fatal("no task claimed")
+	}
+	if claimed.Group != "44063_Class 200" {
+		t.Fatalf("claimed group = %q, want %q (must be set before claim)", claimed.Group, "44063_Class 200")
+	}
+	if _, err := os.Stat(filepath.Join(out, claimed.Group, "folder.json")); err != nil {
+		t.Fatalf("folder.json missing: %v", err)
 	}
 }
 
