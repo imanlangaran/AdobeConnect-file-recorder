@@ -24,6 +24,7 @@ import (
 type Options struct {
 	ZipPath   string // existing archive (reconstruct-only mode)
 	ZipURL    string // download mode (ignored if ZipPath set)
+	CachePath string // download target kept between runs; a valid file here skips the download ("" = temp dir)
 	Session   string
 	Cookies   []*http.Cookie // extra browser cookies
 	Title     string         // output folder name (default: archive stem)
@@ -82,30 +83,43 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 
 	zipPath := opt.ZipPath
 	if zipPath == "" {
-		cookies := opt.Cookies
-		if opt.Username != "" {
-			status("logging in")
-			cs, err := download.Login(ctx, &http.Client{}, originOf(opt.ZipURL), opt.Username, opt.Password)
-			if err != nil {
+		zipPath = filepath.Join(work, "recording.zip")
+		if opt.CachePath != "" {
+			if err := os.MkdirAll(filepath.Dir(opt.CachePath), 0o755); err != nil {
 				return rep, err
 			}
-			cookies = append(cookies, cs...)
 		}
-		status("downloading archive")
-		zipPath = filepath.Join(work, "recording.zip")
-		if err := download.File(ctx, &http.Client{}, opt.ZipURL, zipPath,
-			download.Options{
-				Session:  opt.Session,
-				Cookies:  cookies,
-				Referer:  refererOf(opt.ZipURL),
-				Validate: download.ValidateZIP,
-				Progress: func(d, t int64) {
-					if opt.Progress != nil {
-						opt.Progress("download", d, t)
-					}
-				},
-			}); err != nil {
-			return rep, err
+		if cachedArchive(opt.CachePath) {
+			status("using cached archive") // retry after a reconstruct failure: don't re-download
+			zipPath = opt.CachePath
+		} else {
+			cookies := opt.Cookies
+			if opt.Username != "" {
+				status("logging in")
+				cs, err := download.Login(ctx, &http.Client{}, originOf(opt.ZipURL), opt.Username, opt.Password)
+				if err != nil {
+					return rep, err
+				}
+				cookies = append(cookies, cs...)
+			}
+			status("downloading archive")
+			if opt.CachePath != "" {
+				zipPath = opt.CachePath
+			}
+			if err := download.File(ctx, &http.Client{}, opt.ZipURL, zipPath,
+				download.Options{
+					Session:  opt.Session,
+					Cookies:  cookies,
+					Referer:  refererOf(opt.ZipURL),
+					Validate: download.ValidateZIP,
+					Progress: func(d, t int64) {
+						if opt.Progress != nil {
+							opt.Progress("download", d, t)
+						}
+					},
+				}); err != nil {
+				return rep, err
+			}
 		}
 	}
 	if st, err := os.Stat(zipPath); err == nil {
@@ -320,6 +334,23 @@ func sanitize(s string) string {
 		out = out[:200]
 	}
 	return out
+}
+
+// cachedArchive reports whether path holds a complete archive worth reusing.
+// download.File only renames .part into place after a validated full copy, so
+// a ZIP signature at path means the previous attempt finished the download.
+func cachedArchive(path string) bool {
+	if path == "" {
+		return false
+	}
+	fh, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer fh.Close()
+	head := make([]byte, 4)
+	n, _ := fh.Read(head)
+	return download.ValidateZIP(head[:n]) == nil
 }
 
 func refererOf(zipURL string) string {

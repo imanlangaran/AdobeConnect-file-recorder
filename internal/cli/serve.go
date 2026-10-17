@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"syscall"
@@ -148,6 +149,7 @@ func processTask(ctx context.Context, store *queue.Store, cfg config.Config, tas
 		status(fmt.Sprintf("set processing: %v", err))
 	}
 	setStage("starting", true)
+	cache := filepath.Join(cfg.DataDir, "cache", task.ID+".zip")
 	rep, err := engine.Run(ctx, engine.Options{
 		ZipURL:   ru.ZipURL(),
 		Title:    title,
@@ -160,7 +162,10 @@ func processTask(ctx context.Context, store *queue.Store, cfg config.Config, tas
 		CRF:      cfg.DefaultCRF,
 		Username: cfg.ACUsername,
 		Password: cfg.ACPassword,
-		Status:   status,
+		// Kept across attempts: a retry after a reconstruct failure skips the
+		// re-download. engine.Run only reuses it when it holds a valid archive.
+		CachePath: cache,
+		Status:    status,
 		Progress: func(stage string, done, total int64) {
 			setStage(formatStage(stage, done, total), false)
 		},
@@ -181,6 +186,7 @@ func processTask(ctx context.Context, store *queue.Store, cfg config.Config, tas
 		status(fmt.Sprintf("set done: %v", err))
 		return
 	}
+	_ = os.Remove(cache) // done: the archive is no longer needed for retries
 	status(fmt.Sprintf("done: %s", rep.VideoPath))
 }
 
