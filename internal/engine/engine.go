@@ -29,6 +29,7 @@ type Options struct {
 	Cookies   []*http.Cookie // extra browser cookies
 	Title     string         // output folder name (default: archive stem)
 	OutDir    string         // parent output directory (default: cwd)
+	Group     string         // subdirectory under OutDir: recordings/<group>/<title>/ ("" = none)
 	Overwrite bool
 	Raw       bool   // full-frame output instead of 720p layout composition
 	MP3       bool   // also export recording.mp3
@@ -130,7 +131,11 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 	if title == "" {
 		title = strings.TrimSuffix(filepath.Base(zipPath), filepath.Ext(zipPath))
 	}
-	outDir := filepath.Join(defaultOutDir(opt.OutDir), sanitize(title))
+	outDir := defaultOutDir(opt.OutDir)
+	if opt.Group != "" {
+		outDir = filepath.Join(outDir, Sanitize(opt.Group))
+	}
+	outDir = filepath.Join(outDir, Sanitize(title))
 	if opt.Overwrite {
 		_ = os.RemoveAll(outDir)
 	}
@@ -310,8 +315,8 @@ func defaultOutDir(d string) string {
 	return filepath.Join(wd, "recordings")
 }
 
-// sanitize makes a safe folder name; keeps unicode letters/digits.
-func sanitize(s string) string {
+// Sanitize makes a safe folder name; keeps unicode letters/digits.
+func Sanitize(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return "recording"

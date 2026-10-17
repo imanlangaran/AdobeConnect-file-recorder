@@ -53,7 +53,11 @@ AC_PASSWORD=secret
 is absent and `.env` exists, the download logs in via `/api/xml?action=login`
 and uses the returned session cookies automatically.
 
-Output lands in `./recordings/<recording-title>/`:
+Output lands in `./recordings/<recording-title>/` (`download` command; `serve`
+groups queued recordings by the folder they belong to in Adobe Connect —
+`./recordings/<folder-id>_<folder-name>/<recording-title>/`, with a `folder.json`
+beside them mapping the machine id to the human name; unresolvable folders land
+in `_unfiled/`):
 
 | File | Content |
 |---|---|

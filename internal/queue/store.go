@@ -35,6 +35,9 @@ type Task struct {
 	ID          string    `json:"id"`
 	URL         string    `json:"url"`
 	RecordingID string    `json:"recording_id"`
+	FolderID    string    `json:"folder_id,omitempty"`   // parent meeting SCO id (machine key)
+	FolderName  string    `json:"folder_name,omitempty"` // human name of that folder
+	Group       string    `json:"group,omitempty"`       // output subdir under OUT_DIR
 	Status      Status    `json:"status"`
 	Stage       string    `json:"stage,omitempty"`
 	Attempts    int       `json:"attempts"`
@@ -154,6 +157,18 @@ func (s *Store) SetStatus(id string, st Status, lastErr string) error {
 func (s *Store) SetStage(id, stage string) error {
 	return s.update(id, func(t *Task) {
 		t.Stage = stage
+		t.UpdatedAt = time.Now().UTC()
+	})
+}
+
+// SetGroup records the parent folder (meeting SCO) a task's recordings are
+// grouped under: the machine id, its human name, and the resolved output
+// subdirectory. Any of the three may be empty (unresolved → _unfiled).
+func (s *Store) SetGroup(id, folderID, folderName, group string) error {
+	return s.update(id, func(t *Task) {
+		t.FolderID = folderID
+		t.FolderName = folderName
+		t.Group = group
 		t.UpdatedAt = time.Now().UTC()
 	})
 }
