@@ -212,6 +212,34 @@ func TestSetStage(t *testing.T) {
 	}
 }
 
+// TestSetGroup: a task born ungrouped (registration-time resolution failed)
+// is healed by the worker — SetGroup must persist all four fields.
+func TestSetGroup(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	task, _, err := s.Enqueue("https://example.test/r1", "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.Get(task.ID); got.Group != "" || got.FolderID != "" {
+		t.Fatalf("fresh task group = %q/%q, want empty", got.FolderID, got.Group)
+	}
+	if err := s.SetGroup(task.ID, "44063", "تصوير", "44063_تصوير"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FolderID != "44063" || got.FolderName != "تصوير" || got.Group != "44063_تصوير" {
+		t.Fatalf("after SetGroup = %q/%q/%q", got.FolderID, got.FolderName, got.Group)
+	}
+}
+
 func TestDeleteAndSubscribe(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {

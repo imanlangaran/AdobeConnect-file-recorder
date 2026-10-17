@@ -170,6 +170,17 @@ func (s *Store) SetStage(id, stage string) error {
 	})
 }
 
+// SetGroup records the parent-folder group of a task, used to heal a task
+// born ungrouped (registration-time resolution failed transiently).
+func (s *Store) SetGroup(id, folderID, folderName, group string) error {
+	return s.update(id, func(t *Task) {
+		t.FolderID = folderID
+		t.FolderName = folderName
+		t.Group = group
+		t.UpdatedAt = time.Now().UTC()
+	})
+}
+
 // SetDone marks a task done and stores the engine report JSON.
 func (s *Store) SetDone(id, reportJSON string) error {
 	return s.update(id, func(t *Task) {

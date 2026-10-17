@@ -7,6 +7,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"html"
 	"io"
 	"net/http"
@@ -22,6 +23,16 @@ import (
 
 // unfiledGroup holds recordings whose parent folder could not be resolved.
 const unfiledGroup = "_unfiled"
+
+// resolveReqTimeout is the per-request budget inside a folder resolution.
+// resolveFolder issues up to 4 requests (login, page, 2x sco-info), so the
+// caller's ctx must allow 4x this or the chain gets truncated mid-flight.
+const resolveReqTimeout = 15 * time.Second
+
+// resolveBudget is the total ctx budget for one resolution at registration.
+// Sized to the full 4-request worst case: an undersized budget is exactly how
+// a resolvable recording silently lands in _unfiled.
+const resolveBudget = 4*resolveReqTimeout + 5*time.Second
 
 // folderRef is folder.json: the id→name record written once per folder dir.
 type folderRef struct {
@@ -42,25 +53,36 @@ var (
 // owning every recording of one class): page → eventSco → sco-info →
 // folder-id → sco-info → name. Best-effort: ("", "") when the server is
 // unreachable or denies access; callers fall back to the _unfiled group.
+// Every give-up path logs, so an unexpected _unfiled is diagnosable.
+//
+// The per-request timeout must fit 4 requests inside whatever ctx budget the
+// caller set — a budget smaller than the sum silently truncates the chain and
+// yields an empty (unfiled) result.
 func resolveFolder(ctx context.Context, pageURL, user, pass string) (id, name string) {
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: resolveReqTimeout}
 	var cookies []*http.Cookie
 	if user != "" {
 		cs, err := download.Login(ctx, client, originOf(pageURL), user, pass)
 		if err != nil {
+			fmt.Fprintf(os.Stderr, "folder resolve %s: login failed: %v\n", pageURL, err)
 			return "", ""
 		}
 		cookies = cs
 	}
 	page := fetchBody(ctx, client, originOf(pageURL), pageURL, cookies)
-	if m := eventScoRe.FindSubmatch(page); m != nil {
-		info := fetchBody(ctx, client, originOf(pageURL),
-			originOf(pageURL)+"/api/xml?action=sco-info&sco-id="+string(m[1]), cookies)
-		if f := folderIDRe.FindSubmatch(info); f != nil {
-			id = string(f[1])
-		}
+	m := eventScoRe.FindSubmatch(page)
+	if m == nil {
+		fmt.Fprintf(os.Stderr, "folder resolve %s: no eventSco on page (%d bytes; session expired or page changed)\n",
+			pageURL, len(page))
+		return "", ""
+	}
+	info := fetchBody(ctx, client, originOf(pageURL),
+		originOf(pageURL)+"/api/xml?action=sco-info&sco-id="+string(m[1]), cookies)
+	if f := folderIDRe.FindSubmatch(info); f != nil {
+		id = string(f[1])
 	}
 	if id == "" {
+		fmt.Fprintf(os.Stderr, "folder resolve %s: sco %s has no folder-id\n", pageURL, m[1])
 		return "", ""
 	}
 	folder := fetchBody(ctx, client, originOf(pageURL),

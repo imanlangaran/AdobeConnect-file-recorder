@@ -150,6 +150,20 @@ func processTask(ctx context.Context, store *queue.Store, cfg config.Config, tas
 	if title == "" {
 		title = ru.ID
 	}
+	// Heal a task born ungrouped: registration-time resolution failed
+	// transiently, and nothing ever retried it. The worker owns the task
+	// exclusively here, so re-resolving before the run is race-free.
+	if task.Group == "" || task.Group == unfiledGroup {
+		id, name := resolveFolder(ctx, ru.PageURL(), cfg.ACUsername, cfg.ACPassword)
+		g := ensureGroup(cfg.OutDir, id, name)
+		if g != unfiledGroup {
+			task.Group = g
+			if err := store.SetGroup(task.ID, id, name, g); err != nil {
+				status(fmt.Sprintf("set group: %v", err))
+			}
+			status(fmt.Sprintf("folder resolved on retry: %s", g))
+		}
+	}
 	if err := store.SetStatus(task.ID, queue.StatusProcessing, ""); err != nil {
 		status(fmt.Sprintf("set processing: %v", err))
 	}
@@ -272,8 +286,9 @@ func (a queueAdapter) resolve(url string) (folderID, folderName, group string) {
 	if a.cfg.ACUsername == "" {
 		return "", "", "" // no credentials: cannot resolve, recording would not download either
 	}
-	// The HTTP handler must not block on the API for long.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// The HTTP handler must not block on the API for long, but the budget
+	// must still cover the whole 4-request chain (see resolveBudget).
+	ctx, cancel := context.WithTimeout(context.Background(), resolveBudget)
 	defer cancel()
 	ru, err := recordingurl.Parse(url)
 	if err != nil {
