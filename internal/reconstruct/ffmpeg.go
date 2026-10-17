@@ -98,16 +98,6 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 		return Result{}, errors.New("timeline has zero duration")
 	}
 
-	mode := "av"
-	switch {
-	case len(vidSegs) == 0 && len(audSegs) == 0:
-		return Result{}, errors.New("timeline has no video or audio segments")
-	case len(vidSegs) == 0:
-		mode = "audio-only"
-	case len(audSegs) == 0:
-		mode = "video-only" // we add a silent track
-	}
-
 	for _, s := range append(append([]timeline.Segment{}, vidSegs...), audSegs...) {
 		p := filepath.Join(opt.Dir, s.FileName())
 		if st, err := os.Stat(p); err != nil || st.Size() == 0 {
@@ -115,13 +105,51 @@ func Run(ctx context.Context, opt Options) (Result, error) {
 		}
 	}
 
-	width, height := fallbackWidth, fallbackHeight
+	// The timeline can claim a stream the file does not carry (a cameraVoip
+	// publisher that only ever sent video, a truncated download): ffmpeg then
+	// kills the whole run with "Stream specifier ':a' … matches no streams".
+	// Probe each segment and drop the unusable ones instead.
+	var skipped []string
 	srcW, srcH := 0, 0 // probed source size (0 = unknown → full-height panel)
-	if mode != "audio-only" {
-		if w, h, err := probeSize(ctx, opt.FFprobePath, filepath.Join(opt.Dir, vidSegs[0].FileName())); err == nil {
-			width, height = w, h
-			srcW, srcH = w, h
+	usable := func(segs []timeline.Segment, wantVideo bool) []timeline.Segment {
+		var out []timeline.Segment
+		for _, s := range segs {
+			hasV, hasA, w, h, err := probeStreams(ctx, opt.FFprobePath, filepath.Join(opt.Dir, s.FileName()))
+			switch {
+			case err != nil:
+				skipped = append(skipped, err.Error())
+			case wantVideo && !hasV, !wantVideo && !hasA:
+				skipped = append(skipped, s.FileName())
+			default:
+				if wantVideo && srcW == 0 {
+					srcW, srcH = w, h
+				}
+				out = append(out, s)
+			}
 		}
+		return out
+	}
+	vidSegs, audSegs = usable(vidSegs, true), usable(audSegs, false)
+	if len(skipped) > 0 && opt.Status != nil {
+		opt.Status(fmt.Sprintf("skipping %d unusable segment file(s): %s",
+			len(skipped), strings.Join(skipped, ", ")))
+	}
+	if len(vidSegs) == 0 && len(audSegs) == 0 {
+		return Result{}, fmt.Errorf("timeline has no usable video or audio segments (skipped: %s)",
+			strings.Join(skipped, ", "))
+	}
+
+	mode := "av"
+	switch {
+	case len(vidSegs) == 0:
+		mode = "audio-only"
+	case len(audSegs) == 0:
+		mode = "video-only" // we add a silent track
+	}
+
+	width, height := fallbackWidth, fallbackHeight
+	if mode != "audio-only" && srcW > 0 {
+		width, height = srcW, srcH
 	}
 	if width%2 != 0 {
 		width++
@@ -470,20 +498,39 @@ func progressOutTime(line string) (float64, bool) {
 	return 0, false
 }
 
-func probeSize(ctx context.Context, ffprobe, file string) (int, int, error) {
+// probeStreams reports which stream types a file carries plus the first video
+// size. A file ffmpeg cannot read, or one carrying no stream at all, errors.
+func probeStreams(ctx context.Context, ffprobe, file string) (hasVideo, hasAudio bool, w, h int, err error) {
+	if ffprobe == "" {
+		ffprobe = "ffprobe"
+	}
 	cmd := exec.CommandContext(ctx, ffprobe,
-		"-v", "error", "-select_streams", "v:0",
-		"-show_entries", "stream=width,height",
-		"-of", "csv=p=0:s=x", file)
-	out, err := cmd.Output()
-	if err != nil {
-		return 0, 0, fmt.Errorf("ffprobe %s: %w", filepath.Base(file), err)
+		"-v", "error", "-show_entries", "stream=codec_type,width,height",
+		"-of", "csv=p=0", file)
+	out, cmdErr := cmd.CombinedOutput()
+	if cmdErr != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			msg = cmdErr.Error()
+		}
+		return false, false, 0, 0, fmt.Errorf("ffprobe %s: %s", filepath.Base(file), msg)
 	}
-	var w, h int
-	if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%dx%d", &w, &h); err != nil || w <= 0 || h <= 0 {
-		return 0, 0, fmt.Errorf("ffprobe %s: bad size %q", filepath.Base(file), strings.TrimSpace(string(out)))
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "video"):
+			hasVideo = true
+			if w == 0 {
+				fmt.Sscanf(line, "video,%dx%d", &w, &h)
+			}
+		case strings.HasPrefix(line, "audio"):
+			hasAudio = true
+		}
 	}
-	return w, h, nil
+	if !hasVideo && !hasAudio {
+		return false, false, 0, 0, fmt.Errorf("ffprobe %s: no streams", filepath.Base(file))
+	}
+	return hasVideo, hasAudio, w, h, nil
 }
 
 // ProbeDuration returns media duration in milliseconds.

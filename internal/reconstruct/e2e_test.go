@@ -31,8 +31,15 @@ func TestEndToEnd(t *testing.T) {
 		"-f", "lavfi", "-i", "sine=frequency=440:duration=1",
 		"-c:a", "nellymoser", "-ar", "22050", "-ac", "1",
 		filepath.Join(dir, "cameraVoip_0_3.flv"))
+	// a cameraVoip publisher that only ever sent video: the timeline claims
+	// audio, the file has none — must be skipped, not kill the ffmpeg run with
+	// "Stream specifier ':a' … matches no streams"
+	runFF(t, "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+		"-f", "lavfi", "-i", "testsrc=duration=1:size=160x120:rate=10",
+		"-c:v", "flv", "-pix_fmt", "yuv420p",
+		filepath.Join(dir, "cameraVoip_0_7.flv"))
 
-	// timeline: video [0,2000] audio [500,1500] stop at 2500ms
+	// timeline: video [0,2000] audio [500,1500] + video-only "audio" [1600,2400], stop at 2500ms
 	timelineXML := `<?xml version="1.0"?>
 <root>
  <Message time="2000" type="data"><String><![CDATA[streamRemoved]]></String><Array><Object>
@@ -45,6 +52,11 @@ func TestEndToEnd(t *testing.T) {
    <streamName><![CDATA[/cameraVoip_0_3]]></streamName>
    <streamType><![CDATA[cameraVoip]]></streamType>
  </Object></Array></Message>
+ <Message time="2400" type="data"><String><![CDATA[streamRemoved]]></String><Array><Object>
+   <startTime><![CDATA[1600]]></startTime>
+   <streamName><![CDATA[/cameraVoip_0_7]]></streamName>
+   <streamType><![CDATA[cameraVoip]]></streamType>
+ </Object></Array></Message>
  <Message time="2500" type="data"><String><![CDATA[__stop__]]></String></Message>
 </root>`
 	if err := os.WriteFile(filepath.Join(dir, "mainstream.xml"), []byte(timelineXML), 0o644); err != nil {
@@ -53,8 +65,10 @@ func TestEndToEnd(t *testing.T) {
 
 	out := filepath.Join(t.TempDir(), "recording.mp4")
 	var lastMs int64
+	var statusLog []string
 	res, err := Run(context.Background(), Options{
 		Dir: dir, Out: out, Overwrite: true,
+		Status: func(m string) { statusLog = append(statusLog, m) },
 		Chat: []assets.ChatMessage{
 			{TimeMs: 500, From: "Alice", Text: "salam!"},
 			{TimeMs: 1200, From: "Omid", Text: "thanks"},
@@ -75,6 +89,11 @@ func TestEndToEnd(t *testing.T) {
 	}
 	if !res.Layout {
 		t.Error("layout should be default")
+	}
+	// the video-only cameraVoip file was dropped and reported, not fatal
+	joined := strings.Join(statusLog, "\n")
+	if !strings.Contains(joined, "cameraVoip_0_7.flv") {
+		t.Errorf("skipped segment not reported via Status:\n%s", joined)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "layout.ass")); err != nil {
 		t.Errorf("layout.ass missing: %v", err)
