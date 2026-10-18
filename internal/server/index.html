@@ -39,21 +39,18 @@
     <section class="mt-4">
       <table class="table table-zebra table-sm">
         <thead>
-          <tr><th>Recording</th><th>Status</th><th>Att.</th><th>State / Detail</th><th>Created</th><th>Updated</th><th>Link</th></tr>
+          <tr><th>Recording</th><th>Status</th><th>Progress / Detail</th><th>Action</th></tr>
         </thead>
         <tbody>
           {{range .Tasks}}
           <tr>
             <td class="font-mono text-xs">{{.RecordingID}}</td>
             <td><span class="badge badge-sm {{badge .Status}}">{{.Status}}</span></td>
-            <td>{{.Attempts}}</td>
             <td class="text-xs">{{if .LastError}}{{.LastError}}{{else if .Stage}}{{.Stage}}{{else if .ReportJSON}}report ready{{else}}--{{end}}</td>
-            <td class="text-xs">{{ftime .CreatedAt}}</td>
-            <td class="text-xs">{{ftime .UpdatedAt}}</td>
-            <td><a class="link link-primary text-xs" href="{{.URL}}" target="_blank" rel="noopener">open</a></td>
+            <td class="text-center text-xs opacity-40">--</td>
           </tr>
           {{else}}
-          <tr><td colspan="7" class="py-6 text-center opacity-60">No tasks yet - paste a recording URL above.</td></tr>
+          <tr><td colspan="4" class="py-6 text-center opacity-60">No tasks yet - paste a recording URL above.</td></tr>
           {{end}}
         </tbody>
       </table>
@@ -76,17 +73,6 @@
     { id: 'emerald', label: 'Emerald' },
     { id: 'cupcake', label: 'Cupcake' }
   ];
-
-  function formatTime(isoStr) {
-    if (!isoStr) return '--';
-    try {
-      const d = new Date(isoStr);
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' ' +
-             d.toLocaleDateString([], { day: '2-digit', month: 'short' });
-    } catch (e) {
-      return isoStr;
-    }
-  }
 
   function formatBytes(bytes) {
     if (!bytes || bytes <= 0) return '0 B';
@@ -133,95 +119,172 @@
     }
   }
 
-  // Report Details Modal
-  function ReportModal({ data, onClose }) {
-    if (!data) return null;
-    const isEngine = typeof data === 'object' && data !== null && (data.video || data.duration_ms || data.video_bytes);
+  // CopyButton copies text to the clipboard. navigator.clipboard needs a
+  // secure context, so fall back to execCommand when the queue is served over
+  // plain HTTP (e.g. a LAN IP).
+  function CopyButton({ text }) {
+    const [copied, setCopied] = useState(false);
+    const copy = async () => {
+      try {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.focus();
+          ta.select();
+          document.execCommand('copy');
+          document.body.removeChild(ta);
+        }
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      } catch (e) {
+        console.error('copy failed', e);
+      }
+    };
+    return html`
+      <button className="btn btn-xs btn-ghost gap-1 px-1.5 shrink-0" onClick=${copy} title="Copy to clipboard">
+        ${copied ? '✓ Copied' : '⧉ Copy'}
+      </button>
+    `;
+  }
+
+  // Task Details Modal: opened by clicking a row. Shows every task field plus
+  // the parsed engine report and clipboard-copy buttons for the outputs.
+  function TaskModal({ task, onClose }) {
+    if (!task) return null;
+    const report = parseJSON(task.reportJSON);
+    const isEngine = report && typeof report === 'object' && (report.video || report.duration_ms || report.video_bytes);
+    const folder = task.folderID && task.folderName
+      ? `${task.folderID}_${task.folderName}`
+      : (task.folderName || '--');
+    const fullTime = (iso) => {
+      if (!iso) return '--';
+      try { return new Date(iso).toLocaleString(); } catch (e) { return iso; }
+    };
+    const field = (label, value) => html`
+      <div className="flex flex-col gap-0.5 min-w-0">
+        <div className="text-2xs opacity-60 uppercase font-semibold">${label}</div>
+        <div className="text-xs break-all">${value}</div>
+      </div>
+    `;
 
     return html`
       <div className="modal modal-open">
         <div className="modal-box max-w-2xl bg-base-100 border border-base-300 shadow-xl">
-          <div className="flex items-center justify-between border-b border-base-300 pb-3 mb-4">
-            <h3 className="font-bold text-base flex items-center gap-2">
-              <span className="badge badge-success badge-sm">Done</span>
-              <span>Recording Run Report</span>
+          <div className="flex items-center justify-between gap-2 border-b border-base-300 pb-3 mb-4">
+            <h3 className="flex items-center gap-2 font-bold text-base min-w-0">
+              <span className=${`badge badge-sm ${statusBadgeClass(task.status)}`}>${task.status}</span>
+              <span className="font-mono truncate" title=${task.id}>${task.recordingID}</span>
             </h3>
             <button className="btn btn-sm btn-circle btn-ghost" onClick=${onClose}>✕</button>
           </div>
 
-          ${isEngine ? html`
-            <div className="space-y-4">
-              <!-- Summary Grid -->
+          <div className="space-y-4">
+            <!-- Task fields -->
+            <div className="grid grid-cols-2 gap-3 p-3 bg-base-200 rounded-box border border-base-300">
+              ${field('Task ID', html`<span className="font-mono select-all">${task.id}</span>`)}
+              ${field('Attempts', `${task.attempts}`)}
+              ${field('Source URL', html`<a className="link link-primary" href=${task.url} target="_blank" rel="noopener">${task.url}</a>`)}
+              ${field('Folder', folder)}
+              ${task.group ? field('Output Group', html`<span className="font-mono">${task.group}</span>`) : null}
+              ${task.stage ? field('Stage', html`<span className="font-mono text-info">${task.stage}</span>`) : null}
+              ${field('Created', fullTime(task.createdAt))}
+              ${field('Updated', fullTime(task.updatedAt))}
+            </div>
+
+            ${task.lastError ? html`
+              <div className="alert alert-error py-2 text-xs">
+                <div className="min-w-0">
+                  <div className="font-bold">Last error</div>
+                  <div className="font-mono break-all mt-1">${task.lastError}</div>
+                </div>
+              </div>
+            ` : null}
+
+            ${isEngine ? html`
+              <!-- Report summary -->
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
                 <div className="p-3 bg-base-200 rounded-box border border-base-300">
                   <div className="text-2xs opacity-60 uppercase font-semibold">Duration</div>
-                  <div className="text-base font-bold text-primary">${formatDuration(data.duration_ms)}</div>
-                  ${data.expected_duration_ms ? html`
-                    <div className="text-2xs opacity-50">expected: ${formatDuration(data.expected_duration_ms)}</div>
+                  <div className="text-base font-bold text-primary">${formatDuration(report.duration_ms)}</div>
+                  ${report.expected_duration_ms ? html`
+                    <div className="text-2xs opacity-50">expected: ${formatDuration(report.expected_duration_ms)}</div>
                   ` : null}
                 </div>
                 <div className="p-3 bg-base-200 rounded-box border border-base-300">
                   <div className="text-2xs opacity-60 uppercase font-semibold">Video File</div>
-                  <div className="text-base font-bold">${formatBytes(data.video_bytes)}</div>
-                  <div className="text-2xs opacity-50">${data.video_segments || 0} segment(s)</div>
+                  <div className="text-base font-bold">${formatBytes(report.video_bytes)}</div>
+                  <div className="text-2xs opacity-50">${report.video_segments || 0} segment(s)</div>
                 </div>
                 <div className="p-3 bg-base-200 rounded-box border border-base-300">
                   <div className="text-2xs opacity-60 uppercase font-semibold">Audio / MP3</div>
-                  <div className="text-base font-bold">${data.mp3_bytes ? formatBytes(data.mp3_bytes) : 'None'}</div>
-                  <div className="text-2xs opacity-50">${data.audio_segments || 0} segment(s)</div>
+                  <div className="text-base font-bold">${report.mp3_bytes ? formatBytes(report.mp3_bytes) : 'None'}</div>
+                  <div className="text-2xs opacity-50">${report.audio_segments || 0} segment(s)</div>
                 </div>
                 <div className="p-3 bg-base-200 rounded-box border border-base-300">
                   <div className="text-2xs opacity-60 uppercase font-semibold">Activity</div>
-                  <div className="text-base font-bold">${data.attendee_count || 0} users</div>
-                  <div className="text-2xs opacity-50">${data.chat_messages || 0} chats</div>
+                  <div className="text-base font-bold">${report.attendee_count || 0} users</div>
+                  <div className="text-2xs opacity-50">${report.chat_messages || 0} chats</div>
                 </div>
               </div>
 
-              <!-- Output Paths -->
+              <!-- Output artifacts -->
               <div className="p-3 bg-base-200 rounded-box border border-base-300 space-y-2 text-xs">
                 <div className="font-semibold text-2xs uppercase opacity-60">Output Artifacts</div>
-                ${data.video ? html`
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="badge badge-xs badge-primary font-mono">MP4</span>
-                    <span className="font-mono text-xs select-all break-all">${data.video}</span>
+                ${report.video ? html`
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="badge badge-xs badge-primary font-mono">MP4</span>
+                      <span className="font-mono text-xs select-all break-all">${report.video}</span>
+                    </div>
+                    <${CopyButton} text=${report.video} />
                   </div>
                 ` : null}
-                ${data.mp3 ? html`
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="badge badge-xs badge-secondary font-mono">MP3</span>
-                    <span className="font-mono text-xs select-all break-all">${data.mp3}</span>
+                ${report.mp3 ? html`
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="badge badge-xs badge-secondary font-mono">MP3</span>
+                      <span className="font-mono text-xs select-all break-all">${report.mp3}</span>
+                    </div>
+                    <${CopyButton} text=${report.mp3} />
                   </div>
                 ` : null}
-                ${data.archive_bytes ? html`
+                ${report.archive_bytes ? html`
                   <div className="text-2xs opacity-60">
-                    Source ZIP: ${formatBytes(data.archive_bytes)} &bull; Mode: ${data.mode || 'av'} &bull; Layout: ${data.layout ? 'yes' : 'no'}
+                    Source ZIP: ${formatBytes(report.archive_bytes)} &bull; Mode: ${report.mode || 'av'} &bull; Layout: ${report.layout ? 'yes' : 'no'}
                   </div>
                 ` : null}
               </div>
 
               <!-- Warnings -->
-              ${data.warnings && data.warnings.length > 0 ? html`
+              ${report.warnings && report.warnings.length > 0 ? html`
                 <div className="alert alert-warning py-2 text-xs">
                   <div>
                     <div className="font-bold">Warnings during processing:</div>
                     <ul className="list-disc list-inside mt-1 space-y-0.5">
-                      ${data.warnings.map((w, idx) => html`<li key=${idx}>${w}</li>`)}
+                      ${report.warnings.map((w, idx) => html`<li key=${idx}>${w}</li>`)}
                     </ul>
                   </div>
                 </div>
               ` : null}
-            </div>
-          ` : null}
+            ` : null}
 
-          <!-- Formatted JSON Payload Accordion -->
-          <details className="mt-4 border border-base-300 rounded-box p-2 bg-base-200/50">
-            <summary className="text-xs font-semibold cursor-pointer opacity-70 select-none">
-              ${isEngine ? 'View Raw JSON Payload' : 'Payload JSON'}
-            </summary>
-            <pre className="mt-2 p-3 bg-base-300 text-base-content rounded text-xs font-mono overflow-auto max-h-60 whitespace-pre">
-${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
-            </pre>
-          </details>
+            <!-- Raw JSON payload -->
+            ${task.reportJSON ? html`
+              <details className="border border-base-300 rounded-box p-2 bg-base-200/50">
+                <summary className="text-xs font-semibold cursor-pointer opacity-70 select-none">
+                  ${isEngine ? 'View Raw JSON Payload' : 'Payload JSON'}
+                </summary>
+                <pre className="mt-2 p-3 bg-base-300 text-base-content rounded text-xs font-mono overflow-auto max-h-60 whitespace-pre">
+${report ? JSON.stringify(report, null, 2) : task.reportJSON}
+                </pre>
+              </details>
+            ` : null}
+          </div>
 
           <div className="modal-action">
             <button className="btn btn-sm btn-primary" onClick=${onClose}>Close</button>
@@ -232,8 +295,8 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
     `;
   }
 
-  // Formatted Detail/Progress Cell
-  function DetailCell({ task, onOpenReport }) {
+  // Formatted Detail/Progress Cell (the row click opens the full detail modal)
+  function DetailCell({ task }) {
     if (task.lastError) {
       return html`
         <div className="max-w-72">
@@ -269,28 +332,10 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
                 💾 ${formatBytes(data.video_bytes)}
               </span>
             ` : null}
-            <button
-              className="btn btn-ghost btn-xs text-primary px-1 hover:underline"
-              onClick=${() => onOpenReport(data)}
-              title="Click to view full report"
-            >
-              Report ↗
-            </button>
           </div>
         `;
       }
-      // Generic JSON or simple object
-      return html`
-        <div className="flex items-center gap-1.5">
-          <span className="badge badge-xs badge-success">Done</span>
-          <button
-            className="btn btn-ghost btn-xs text-primary px-1 hover:underline"
-            onClick=${() => onOpenReport(data || task.reportJSON)}
-          >
-            Report ↗
-          </button>
-        </div>
-      `;
+      return html`<span className="badge badge-xs badge-success">Done</span>`;
     }
     if (task.status === 'queued') {
       return html`<span className="text-xs opacity-40 italic">Waiting in queue</span>`;
@@ -358,7 +403,7 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
     const [deleteTarget, setDeleteTarget] = useState(null);
     const [deleting, setDeleting] = useState(false);
     const [connState, setConnState] = useState('connecting');
-    const [reportModalData, setReportModalData] = useState(null);
+    const [taskModalId, setTaskModalId] = useState(null);
     const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
 
     const toggleGroup = (key) => setCollapsedGroups(prev => {
@@ -580,6 +625,10 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
       }
     };
 
+    // Resolve the open modal against the live task list, so it reflects
+    // streaming updates and disappears if the task is deleted.
+    const taskModalTask = taskModalId ? tasks.find(t => t.id === taskModalId) : null;
+
     return html`
       <div className="mx-auto max-w-6xl px-4 py-6">
         <!-- Header -->
@@ -749,18 +798,14 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
               <tr className="border-b border-base-300">
                 <th><button className="link link-hover" onClick=${() => handleSort('rec')}>Recording ${sortField === 'rec' ? (sortAsc ? '▲' : '▼') : ''}</button></th>
                 <th><button className="link link-hover" onClick=${() => handleSort('status')}>Status ${sortField === 'status' ? (sortAsc ? '▲' : '▼') : ''}</button></th>
-                <th className="text-center">Att.</th>
                 <th>Progress / Detail</th>
-                <th><button className="link link-hover" onClick=${() => handleSort('created')}>Created ${sortField === 'created' ? (sortAsc ? '▲' : '▼') : ''}</button></th>
-                <th>Updated</th>
-                <th>Link</th>
                 <th className="text-center">Action</th>
               </tr>
             </thead>
             <tbody>
               ${groups.length === 0 ? html`
                 <tr>
-                  <td colSpan="8" className="py-8 text-center opacity-60 text-xs">
+                  <td colSpan="4" className="py-8 text-center opacity-60 text-xs">
                     ${tasks.length === 0 ? 'No tasks in queue. Enqueue a recording URL above.' : 'No tasks match current filter/search.'}
                   </td>
                 </tr>
@@ -773,7 +818,7 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
                       className="cursor-pointer select-none bg-base-200/70 hover:bg-base-300"
                       onClick=${() => toggleGroup(g.key)}
                     >
-                      <td colSpan="8" className=${`text-xs font-semibold ${unfiled ? 'border border-dashed border-base-300 opacity-70' : ''}`}>
+                      <td colSpan="4" className=${`text-xs font-semibold ${unfiled ? 'border border-dashed border-base-300 opacity-70' : ''}`}>
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="w-3 text-center">${isCollapsed ? '▸' : '▾'}</span>
                           <span>📁</span>
@@ -797,7 +842,12 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
                     </tr>
                     ${!isCollapsed && g.rows.map(t => {
                       return html`
-                        <tr key=${t.id} className="hover">
+                        <tr
+                          key=${t.id}
+                          className="cursor-pointer hover"
+                          title="Click for full task details"
+                          onClick=${(e) => { if (e.target.closest('button, a')) return; setTaskModalId(t.id); }}
+                        >
                           <td className="ps-4 font-mono text-xs max-w-44 truncate" title=${t.id}>
                             <span className="opacity-40">└</span> ${t.recordingID}
                           </td>
@@ -806,14 +856,8 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
                               ${t.status}
                             </span>
                           </td>
-                          <td className="text-center text-xs font-mono">${t.attempts}</td>
                           <td className="max-w-72">
-                            <${DetailCell} task=${t} onOpenReport=${(data) => setReportModalData(data)} />
-                          </td>
-                          <td className="whitespace-nowrap text-xs opacity-75">${formatTime(t.createdAt)}</td>
-                          <td className="whitespace-nowrap text-xs opacity-75">${formatTime(t.updatedAt)}</td>
-                          <td>
-                            <a className="link link-primary text-xs" href=${t.url} target="_blank" rel="noopener">open</a>
+                            <${DetailCell} task=${t} />
                           </td>
                           <td className="text-center">
                             <div className="flex items-center justify-center gap-0.5 flex-wrap">
@@ -865,9 +909,9 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
           </div>
         `}
 
-        <!-- Report Details Modal -->
-        ${reportModalData && html`
-          <${ReportModal} data=${reportModalData} onClose=${() => setReportModalData(null)} />
+        <!-- Task Details Modal -->
+        ${taskModalTask && html`
+          <${TaskModal} task=${taskModalTask} onClose=${() => setTaskModalId(null)} />
         `}
       </div>
     `;

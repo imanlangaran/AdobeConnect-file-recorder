@@ -217,7 +217,7 @@ func TestStatusPageHasTable(t *testing.T) {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"<table", "p15rdeovw4ge", "<form", `name="url"`, "react", "tailwindcss", "daisyui"} {
+	for _, want := range []string{"<table", "p15rdeovw4ge", "<form", `name="url"`, "react", "tailwindcss", "daisyui", "Task Details Modal", "navigator.clipboard"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("status page missing %q: %.200s", want, body)
 		}
