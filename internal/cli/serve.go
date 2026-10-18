@@ -18,9 +18,10 @@ import (
 	"time"
 
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/config"
+	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/domain"
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/engine"
-	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/queue"
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/recordingurl"
+	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/repository/filestore"
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/server"
 )
 
@@ -50,7 +51,7 @@ func runServe(args []string) int {
 		fmt.Fprintln(os.Stderr, "error: ffmpeg and ffprobe must be installed and on PATH")
 		return 1
 	}
-	store, err := queue.Open(cfg.DataDir)
+	store, err := filestore.Open(cfg.DataDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: open queue: %v\n", err)
 		return 1
@@ -105,7 +106,7 @@ func runServe(args []string) int {
 
 // worker claims tasks until ctx is cancelled. Claim() already marks the task
 // downloading and counts the attempt.
-func worker(ctx context.Context, store *queue.Store, cfg config.Config, rs *runs) {
+func worker(ctx context.Context, store domain.Repository, cfg config.Config, rs *runs) {
 	w, h := cfg.ResolutionDims()
 	for {
 		if ctx.Err() != nil {
@@ -157,7 +158,7 @@ func (r *runs) remove(id string) {
 	r.mu.Unlock()
 }
 
-func processTask(ctx context.Context, store *queue.Store, cfg config.Config, task queue.Task, w, h int, rs *runs) {
+func processTask(ctx context.Context, store domain.Repository, cfg config.Config, task domain.Task, w, h int, rs *runs) {
 	var lastStageUpdate time.Time
 	var lastStageStr string
 	setStage := func(s string, force bool) {
@@ -201,7 +202,7 @@ func processTask(ctx context.Context, store *queue.Store, cfg config.Config, tas
 			status(fmt.Sprintf("folder resolved on retry: %s", g))
 		}
 	}
-	if err := store.SetStatus(task.ID, queue.StatusProcessing, ""); err != nil {
+	if err := store.SetStatus(task.ID, domain.StatusProcessing, ""); err != nil {
 		status(fmt.Sprintf("set processing: %v", err))
 	}
 	setStage("starting", true)
@@ -240,14 +241,14 @@ func processTask(ctx context.Context, store *queue.Store, cfg config.Config, tas
 	}
 	if task.SkipDownload {
 		// Reconstruct-only retry: point straight at the cached archive.
-		// queue.Retry validated it before requeueing; Extract fails loudly
+		// domain.Retry validated it before requeueing; Extract fails loudly
 		// if it vanished meanwhile.
 		opts.ZipPath = cache
 	}
 	rep, err := engine.Run(runCtx, opts)
 	if err != nil {
 		if rh.stopped.Load() { // user stop: hold, don't burn the retry budget
-			if serr := store.SetStatus(task.ID, queue.StatusPaused, "stopped by user"); serr != nil {
+			if serr := store.SetStatus(task.ID, domain.StatusPaused, "stopped by user"); serr != nil {
 				fmt.Fprintf(os.Stderr, "[%s] set paused: %v\n", task.ID, serr)
 			}
 			status("stopped by user")
@@ -288,11 +289,11 @@ func formatStage(stage string, done, total int64) string {
 
 // failTask requeues while attempts remain (Claim counts them), else fails.
 // ponytail: fixed 5s backoff; add jitter/exponential growth if retries hammer the server.
-func failTask(ctx context.Context, store *queue.Store, cfg config.Config, task queue.Task, err error) {
+func failTask(ctx context.Context, store domain.Repository, cfg config.Config, task domain.Task, err error) {
 	fmt.Fprintf(os.Stderr, "[%s] failed (attempt %d): %v\n", task.ID, task.Attempts, err)
 	_ = store.SetStage(task.ID, "")
 	if ctx.Err() == nil && task.Attempts > cfg.RetryCount {
-		if serr := store.SetStatus(task.ID, queue.StatusFailed, err.Error()); serr != nil {
+		if serr := store.SetStatus(task.ID, domain.StatusFailed, err.Error()); serr != nil {
 			fmt.Fprintf(os.Stderr, "[%s] set failed: %v\n", task.ID, serr)
 		}
 		return
@@ -300,7 +301,7 @@ func failTask(ctx context.Context, store *queue.Store, cfg config.Config, task q
 	if ctx.Err() == nil { // running normally -> backoff before requeue
 		sleepCtx(ctx, retryBackoff)
 	} // shutting down -> requeue immediately for the next run
-	if serr := store.SetStatus(task.ID, queue.StatusQueued, err.Error()); serr != nil {
+	if serr := store.SetStatus(task.ID, domain.StatusQueued, err.Error()); serr != nil {
 		fmt.Fprintf(os.Stderr, "[%s] requeue: %v\n", task.ID, serr)
 	}
 }
@@ -316,10 +317,10 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// queueAdapter bridges *queue.Store to server.Store (server keeps local
-// mirrors of the queue types; see its package comment).
+// queueAdapter bridges domain.Repository to server.Store (server defines its
+// own HTTP DTO; see its package comment).
 type queueAdapter struct {
-	q   *queue.Store
+	q   domain.Repository
 	cfg config.Config
 	rs  *runs
 }
@@ -351,12 +352,12 @@ func (a queueAdapter) Retry(id, mode string) error {
 	}
 }
 
-// toServerErr translates queue errors into the HTTP layer's sentinels.
+// toServerErr translates domain errors into the HTTP layer's sentinels.
 func toServerErr(err error) error {
 	switch {
-	case errors.Is(err, queue.ErrNotFound):
+	case errors.Is(err, domain.ErrNotFound):
 		return server.ErrNotFound
-	case errors.Is(err, queue.ErrBadState):
+	case errors.Is(err, domain.ErrBadState):
 		return server.ErrBadState
 	}
 	return err
@@ -382,7 +383,7 @@ func (a queueAdapter) Enqueue(url, recordingID string) (server.Task, bool, error
 	// without its group can be claimed by a worker in the meantime and would
 	// output flat instead of into its class folder.
 	folderID, folderName, group := a.resolve(url)
-	// queue.Enqueue reports dedupe hits atomically under its own lock.
+	// domain.Enqueue reports dedupe hits atomically under its own lock.
 	t, existed, err := a.q.EnqueueGrouped(url, recordingID, folderID, folderName, group)
 	if err != nil {
 		return server.Task{}, false, err
@@ -449,7 +450,7 @@ func (a queueAdapter) Subscribe(fn func()) {
 	a.q.Subscribe(fn)
 }
 
-func toServerTask(t queue.Task) server.Task {
+func toServerTask(t domain.Task) server.Task {
 	return server.Task{
 		ID: t.ID, URL: t.URL, RecordingID: t.RecordingID,
 		FolderID: t.FolderID, FolderName: t.FolderName, Group: t.Group,

@@ -1,10 +1,12 @@
-package queue
+package filestore
 
 import (
 	"errors"
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/domain"
 )
 
 func TestEnqueueDedupeClaimSetDoneList(t *testing.T) {
@@ -18,7 +20,7 @@ func TestEnqueueDedupeClaimSetDoneList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	if a.ID == "" || a.Status != StatusQueued || existed {
+	if a.ID == "" || a.Status != domain.StatusQueued || existed {
 		t.Fatalf("bad task: %+v existed=%v", a, existed)
 	}
 
@@ -42,11 +44,11 @@ func TestEnqueueDedupeClaimSetDoneList(t *testing.T) {
 	if !ok {
 		t.Fatal("Claim: nothing claimed")
 	}
-	if claimed.ID != a.ID || claimed.Status != StatusDownloading {
+	if claimed.ID != a.ID || claimed.Status != domain.StatusDownloading {
 		t.Fatalf("claimed wrong task: %+v", claimed)
 	}
 
-	if err := s.SetStatus(b.ID, StatusProcessing, ""); err != nil {
+	if err := s.SetStatus(b.ID, domain.StatusProcessing, ""); err != nil {
 		t.Fatalf("SetStatus: %v", err)
 	}
 	if err := s.SetDone(a.ID, `{"ok":true}`); err != nil {
@@ -57,11 +59,11 @@ func TestEnqueueDedupeClaimSetDoneList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.Status != StatusDone || got.ReportJSON != `{"ok":true}` {
+	if got.Status != domain.StatusDone || got.ReportJSON != `{"ok":true}` {
 		t.Fatalf("bad done task: %+v", got)
 	}
-	if _, err := s.Get("missing"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("Get missing: want ErrNotFound, got %v", err)
+	if _, err := s.Get("missing"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("Get missing: want domain.ErrNotFound, got %v", err)
 	}
 
 	list, err := s.List(0)
@@ -79,12 +81,12 @@ func TestEnqueueDedupeClaimSetDoneList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Counts: %v", err)
 	}
-	if counts[StatusDone] != 1 || counts[StatusProcessing] != 1 {
+	if counts[domain.StatusDone] != 1 || counts[domain.StatusProcessing] != 1 {
 		t.Fatalf("bad counts: %+v", counts)
 	}
 
 	// Failed task may be re-enqueued for the same URL (no active row).
-	if err := s.SetStatus(b.ID, StatusFailed, "boom"); err != nil {
+	if err := s.SetStatus(b.ID, domain.StatusFailed, "boom"); err != nil {
 		t.Fatalf("SetStatus failed: %v", err)
 	}
 	if _, ok := s.Claim(); ok {
@@ -115,7 +117,7 @@ func TestRequeueActive(t *testing.T) {
 	if !ok || claimed.ID != a.ID {
 		t.Fatalf("Claim: %+v %v", claimed, ok)
 	}
-	if err := s.SetStatus(b.ID, StatusProcessing, ""); err != nil {
+	if err := s.SetStatus(b.ID, domain.StatusProcessing, ""); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := s.RequeueActive(); err != nil || n != 2 {
@@ -126,7 +128,7 @@ func TestRequeueActive(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Status != StatusQueued {
+		if got.Status != domain.StatusQueued {
 			t.Fatalf("task %s status = %s, want queued", id, got.Status)
 		}
 		if got.LastError == "" {
@@ -176,7 +178,7 @@ func TestPruneTerminal(t *testing.T) {
 	if len(list) != 4 {
 		t.Fatalf("after prune: %d tasks, want 4", len(list))
 	}
-	if got, err := s.Get(active.ID); err != nil || got.Status != StatusQueued {
+	if got, err := s.Get(active.ID); err != nil || got.Status != domain.StatusQueued {
 		t.Fatalf("prune must keep active rows: %+v %v", got, err)
 	}
 }
@@ -257,14 +259,14 @@ func TestRetryResumePause(t *testing.T) {
 	}
 
 	// Pause: only running tasks, only existing ones.
-	if err := s.Pause("missing"); !errors.Is(err, ErrNotFound) {
+	if err := s.Pause("missing"); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("Pause missing: %v", err)
 	}
-	if err := s.SetStatus(task.ID, StatusQueued, ""); err != nil {
+	if err := s.SetStatus(task.ID, domain.StatusQueued, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Pause(task.ID); !errors.Is(err, ErrBadState) {
-		t.Fatalf("Pause queued must be ErrBadState, got %v", err)
+	if err := s.Pause(task.ID); !errors.Is(err, domain.ErrBadState) {
+		t.Fatalf("Pause queued must be domain.ErrBadState, got %v", err)
 	}
 	if _, ok := s.Claim(); !ok { // re-claim for the pause path
 		t.Fatal("Claim: nothing to claim")
@@ -273,7 +275,7 @@ func TestRetryResumePause(t *testing.T) {
 		t.Fatalf("Pause running: %v", err)
 	}
 	got, _ := s.Get(task.ID)
-	if got.Status != StatusPaused || got.Stage != "" {
+	if got.Status != domain.StatusPaused || got.Stage != "" {
 		t.Fatalf("after Pause: %+v", got)
 	}
 	if _, ok := s.Claim(); ok {
@@ -285,25 +287,25 @@ func TestRetryResumePause(t *testing.T) {
 		t.Fatalf("Resume: %v", err)
 	}
 	got, _ = s.Get(task.ID)
-	if got.Status != StatusQueued || got.Attempts != claimed.Attempts+1 { // claimed twice
+	if got.Status != domain.StatusQueued || got.Attempts != claimed.Attempts+1 { // claimed twice
 		t.Fatalf("after Resume: %+v", got)
 	}
-	if err := s.Resume(task.ID); !errors.Is(err, ErrBadState) { // now queued
-		t.Fatalf("Resume queued must be ErrBadState, got %v", err)
+	if err := s.Resume(task.ID); !errors.Is(err, domain.ErrBadState) { // now queued
+		t.Fatalf("Resume queued must be domain.ErrBadState, got %v", err)
 	}
 
 	// Retry: only from failed/paused/done; resets attempts, sets mode.
-	if err := s.Retry(task.ID, true); !errors.Is(err, ErrBadState) {
-		t.Fatalf("Retry queued must be ErrBadState, got %v", err)
+	if err := s.Retry(task.ID, true); !errors.Is(err, domain.ErrBadState) {
+		t.Fatalf("Retry queued must be domain.ErrBadState, got %v", err)
 	}
-	if err := s.SetStatus(task.ID, StatusFailed, "boom"); err != nil {
+	if err := s.SetStatus(task.ID, domain.StatusFailed, "boom"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Retry(task.ID, true); err != nil {
 		t.Fatalf("Retry failed task: %v", err)
 	}
 	got, _ = s.Get(task.ID)
-	if got.Status != StatusQueued || got.Attempts != 0 || !got.SkipDownload ||
+	if got.Status != domain.StatusQueued || got.Attempts != 0 || !got.SkipDownload ||
 		got.LastError != "" || got.Stage != "" {
 		t.Fatalf("after reconstruct Retry: %+v", got)
 	}
@@ -319,7 +321,7 @@ func TestRetryResumePause(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if counts[StatusPaused] != 1 {
+	if counts[domain.StatusPaused] != 1 {
 		t.Fatalf("counts missing paused: %+v", counts)
 	}
 }
@@ -349,10 +351,10 @@ func TestDeleteAndSubscribe(t *testing.T) {
 	if err := s.Delete(task.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := s.Get(task.ID); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Get(task.ID); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("task should be deleted, got err=%v", err)
 	}
-	if err := s.Delete("non-existent"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("Delete non-existent want ErrNotFound, got %v", err)
+	if err := s.Delete("non-existent"); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("Delete non-existent want domain.ErrNotFound, got %v", err)
 	}
 }

@@ -1,9 +1,11 @@
-// Package queue provides a persistent task queue for recording jobs.
+// Package filestore is the file-backed adapter for domain.Repository: a
+// mutex-guarded JSON file written atomically (temp file + rename) so a crash
+// never leaves a half-written queue behind.
 //
 // ponytail: JSON-file store holds up to ~10k tasks comfortably; migrate to
 // SQLite (modernc.org/sqlite) if the queue grows large or multi-process
 // atomic claim races start to matter.
-package queue
+package filestore
 
 import (
 	"crypto/rand"
@@ -17,44 +19,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/domain"
 )
-
-// Status is the lifecycle state of a Task.
-type Status string
-
-const (
-	StatusQueued      Status = "queued"
-	StatusDownloading Status = "downloading"
-	StatusProcessing  Status = "processing"
-	StatusDone        Status = "done"
-	StatusFailed      Status = "failed"
-	StatusPaused      Status = "paused" // stopped by the user; resume requeues it
-)
-
-// Task is a single queued recording job.
-type Task struct {
-	ID           string    `json:"id"`
-	URL          string    `json:"url"`
-	RecordingID  string    `json:"recording_id"`
-	FolderID     string    `json:"folder_id,omitempty"`   // parent meeting SCO id (machine key)
-	FolderName   string    `json:"folder_name,omitempty"` // human name of that folder
-	Group        string    `json:"group,omitempty"`       // output subdir under OUT_DIR
-	Status       Status    `json:"status"`
-	SkipDownload bool      `json:"skip_download,omitempty"` // reconstruct-only retry: reuse the cached archive
-	Stage        string    `json:"stage,omitempty"`
-	Attempts     int       `json:"attempts"`
-	LastError    string    `json:"last_error,omitempty"`
-	ReportJSON   string    `json:"report_json,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
-}
-
-// ErrNotFound is returned when no task with the given ID exists.
-var ErrNotFound = errors.New("queue: task not found")
-
-// ErrBadState is returned by Retry/Resume/Pause for a status transition that
-// is not allowed (e.g. pausing a queued task).
-var ErrBadState = errors.New("queue: invalid task state")
 
 // Store is a mutex-guarded, file-backed task queue. Every mutation is
 // persisted atomically (write temp file + rename) so a crash never leaves a
@@ -67,7 +34,7 @@ type Store struct {
 }
 
 type diskState struct {
-	Tasks []Task `json:"tasks"`
+	Tasks []domain.Task `json:"tasks"`
 }
 
 // Open creates dataDir if needed and opens (or initialises) queue.json inside it.
@@ -94,48 +61,48 @@ func Open(dataDir string) (*Store, error) {
 // (dedupe: a URL already queued, downloading, or processing is not re-added).
 // existed reports whether the returned task predates this call, so callers
 // can answer 200 (duplicate) vs 202 (new) without a separate scan.
-func (s *Store) Enqueue(url, recordingID string) (Task, bool, error) {
+func (s *Store) Enqueue(url, recordingID string) (domain.Task, bool, error) {
 	return s.EnqueueGrouped(url, recordingID, "", "", "")
 }
 
 // EnqueueGrouped registers a task already resolved to its parent folder. The
 // group must be set here, not after: a task persisted ungrouped can be claimed
 // by a worker before a later SetGroup and would output to the wrong directory.
-func (s *Store) EnqueueGrouped(url, recordingID, folderID, folderName, group string) (t Task, existed bool, err error) {
+func (s *Store) EnqueueGrouped(url, recordingID, folderID, folderName, group string) (t domain.Task, existed bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tasks, err := s.loadLocked()
 	if err != nil {
-		return Task{}, false, err
+		return domain.Task{}, false, err
 	}
 	for _, t := range tasks {
-		if t.URL == url && (t.Status == StatusQueued || t.Status == StatusDownloading || t.Status == StatusProcessing) {
+		if t.URL == url && (t.Status == domain.StatusQueued || t.Status == domain.StatusDownloading || t.Status == domain.StatusProcessing) {
 			return t, true, nil
 		}
 	}
 	now := time.Now().UTC()
-	t = Task{ID: s.newID(now), URL: url, RecordingID: recordingID,
+	t = domain.Task{ID: s.newID(now), URL: url, RecordingID: recordingID,
 		FolderID: folderID, FolderName: folderName, Group: group,
-		Status: StatusQueued, CreatedAt: now, UpdatedAt: now}
+		Status: domain.StatusQueued, CreatedAt: now, UpdatedAt: now}
 	tasks = append(tasks, t)
 	if err := s.saveLocked(tasks); err != nil {
-		return Task{}, false, err
+		return domain.Task{}, false, err
 	}
 	return t, false, nil
 }
 
 // Claim picks the oldest queued task and marks it downloading.
 // The second return value is false when no queued task exists.
-func (s *Store) Claim() (Task, bool) {
+func (s *Store) Claim() (domain.Task, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tasks, err := s.loadLocked()
 	if err != nil {
-		return Task{}, false
+		return domain.Task{}, false
 	}
 	best := -1
 	for i, t := range tasks {
-		if t.Status != StatusQueued {
+		if t.Status != domain.StatusQueued {
 			continue
 		}
 		if best == -1 || t.CreatedAt.Before(tasks[best].CreatedAt) ||
@@ -144,23 +111,23 @@ func (s *Store) Claim() (Task, bool) {
 		}
 	}
 	if best == -1 {
-		return Task{}, false
+		return domain.Task{}, false
 	}
-	tasks[best].Status = StatusDownloading
+	tasks[best].Status = domain.StatusDownloading
 	tasks[best].Stage = ""
 	tasks[best].Attempts++
 	tasks[best].UpdatedAt = time.Now().UTC()
 	if err := s.saveLocked(tasks); err != nil {
-		return Task{}, false
+		return domain.Task{}, false
 	}
 	return tasks[best], true
 }
 
 // SetStatus moves a task to st and records lastErr.
-func (s *Store) SetStatus(id string, st Status, lastErr string) error {
-	return s.update(id, func(t *Task) {
+func (s *Store) SetStatus(id string, st domain.Status, lastErr string) error {
+	return s.update(id, func(t *domain.Task) {
 		t.Status = st
-		if st == StatusFailed || st == StatusQueued || st == StatusPaused {
+		if st == domain.StatusFailed || st == domain.StatusQueued || st == domain.StatusPaused {
 			t.Stage = ""
 		}
 		t.LastError = lastErr
@@ -170,7 +137,7 @@ func (s *Store) SetStatus(id string, st Status, lastErr string) error {
 
 // SetStage updates a task's current execution stage without changing its status.
 func (s *Store) SetStage(id, stage string) error {
-	return s.update(id, func(t *Task) {
+	return s.update(id, func(t *domain.Task) {
 		t.Stage = stage
 		t.UpdatedAt = time.Now().UTC()
 	})
@@ -179,7 +146,7 @@ func (s *Store) SetStage(id, stage string) error {
 // SetGroup records the parent-folder group of a task, used to heal a task
 // born ungrouped (registration-time resolution failed transiently).
 func (s *Store) SetGroup(id, folderID, folderName, group string) error {
-	return s.update(id, func(t *Task) {
+	return s.update(id, func(t *domain.Task) {
 		t.FolderID = folderID
 		t.FolderName = folderName
 		t.Group = group
@@ -189,8 +156,8 @@ func (s *Store) SetGroup(id, folderID, folderName, group string) error {
 
 // SetDone marks a task done and stores the engine report JSON.
 func (s *Store) SetDone(id, reportJSON string) error {
-	return s.update(id, func(t *Task) {
-		t.Status = StatusDone
+	return s.update(id, func(t *domain.Task) {
+		t.Status = domain.StatusDone
 		t.Stage = ""
 		t.LastError = ""
 		t.ReportJSON = reportJSON
@@ -212,11 +179,11 @@ func (s *Store) RequeueActive() (int, error) {
 	n := 0
 	now := time.Now().UTC()
 	for i := range tasks {
-		if tasks[i].Status != StatusDownloading && tasks[i].Status != StatusProcessing {
+		if tasks[i].Status != domain.StatusDownloading && tasks[i].Status != domain.StatusProcessing {
 			continue
 		}
 		was := tasks[i].Status
-		tasks[i].Status = StatusQueued
+		tasks[i].Status = domain.StatusQueued
 		tasks[i].Stage = ""
 		if tasks[i].LastError == "" {
 			tasks[i].LastError = "requeued after restart (was " + string(was) + ")"
@@ -232,13 +199,13 @@ func (s *Store) RequeueActive() (int, error) {
 
 // Retry requeues a terminal (or paused) task with a fresh attempt budget.
 // skipDownload asks for reconstruct-only: the worker reuses the cached
-// archive instead of downloading it again. Returns ErrBadState when the task
+// archive instead of downloading it again. Returns domain.ErrBadState when the task
 // is queued or actively running.
 func (s *Store) Retry(id string, skipDownload bool) error {
-	return s.updateIf(id, func(t *Task) bool {
-		return t.Status == StatusFailed || t.Status == StatusPaused || t.Status == StatusDone
-	}, func(t *Task) {
-		t.Status = StatusQueued
+	return s.updateIf(id, func(t *domain.Task) bool {
+		return t.Status == domain.StatusFailed || t.Status == domain.StatusPaused || t.Status == domain.StatusDone
+	}, func(t *domain.Task) {
+		t.Status = domain.StatusQueued
 		t.SkipDownload = skipDownload
 		t.Attempts = 0
 		t.Stage = ""
@@ -250,19 +217,19 @@ func (s *Store) Retry(id string, skipDownload bool) error {
 // Resume requeues a paused task as-is: attempts, last error and the
 // reconstruct-only flag survive, so the pipeline picks up where it stopped.
 func (s *Store) Resume(id string) error {
-	return s.updateIf(id, func(t *Task) bool { return t.Status == StatusPaused },
-		func(t *Task) {
-			t.Status = StatusQueued
+	return s.updateIf(id, func(t *domain.Task) bool { return t.Status == domain.StatusPaused },
+		func(t *domain.Task) {
+			t.Status = domain.StatusQueued
 			t.UpdatedAt = time.Now().UTC()
 		})
 }
 
 // Pause holds a running task: only downloading/processing tasks can stop.
 func (s *Store) Pause(id string) error {
-	return s.updateIf(id, func(t *Task) bool {
-		return t.Status == StatusDownloading || t.Status == StatusProcessing
-	}, func(t *Task) {
-		t.Status = StatusPaused
+	return s.updateIf(id, func(t *domain.Task) bool {
+		return t.Status == domain.StatusDownloading || t.Status == domain.StatusProcessing
+	}, func(t *domain.Task) {
+		t.Status = domain.StatusPaused
 		t.Stage = ""
 		t.UpdatedAt = time.Now().UTC()
 	})
@@ -285,7 +252,7 @@ func (s *Store) PruneTerminal() (int, error) {
 	}
 	terminal := 0
 	for _, t := range tasks {
-		if t.Status == StatusDone || t.Status == StatusFailed {
+		if t.Status == domain.StatusDone || t.Status == domain.StatusFailed {
 			terminal++
 		}
 	}
@@ -301,7 +268,7 @@ func (s *Store) PruneTerminal() (int, error) {
 	})
 	keep := tasks[:0]
 	for _, t := range tasks {
-		if drop > 0 && (t.Status == StatusDone || t.Status == StatusFailed) {
+		if drop > 0 && (t.Status == domain.StatusDone || t.Status == domain.StatusFailed) {
 			drop--
 			continue
 		}
@@ -311,14 +278,14 @@ func (s *Store) PruneTerminal() (int, error) {
 }
 
 // List returns tasks newest-first. A limit <= 0 means no limit.
-func (s *Store) List(limit int) ([]Task, error) {
+func (s *Store) List(limit int) ([]domain.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tasks, err := s.loadLocked()
 	if err != nil {
 		return nil, err
 	}
-	out := append([]Task(nil), tasks...)
+	out := append([]domain.Task(nil), tasks...)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
 			return out[i].ID > out[j].ID
@@ -331,37 +298,37 @@ func (s *Store) List(limit int) ([]Task, error) {
 	return out, nil
 }
 
-// Get returns the task with id, or ErrNotFound.
-func (s *Store) Get(id string) (Task, error) {
+// Get returns the task with id, or domain.ErrNotFound.
+func (s *Store) Get(id string) (domain.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tasks, err := s.loadLocked()
 	if err != nil {
-		return Task{}, err
+		return domain.Task{}, err
 	}
 	for _, t := range tasks {
 		if t.ID == id {
 			return t, nil
 		}
 	}
-	return Task{}, ErrNotFound
+	return domain.Task{}, domain.ErrNotFound
 }
 
 // Counts returns the number of tasks in each status (all five keys present).
-func (s *Store) Counts() (map[Status]int, error) {
+func (s *Store) Counts() (map[domain.Status]int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tasks, err := s.loadLocked()
 	if err != nil {
 		return nil, err
 	}
-	m := map[Status]int{
-		StatusQueued:      0,
-		StatusDownloading: 0,
-		StatusProcessing:  0,
-		StatusDone:        0,
-		StatusFailed:      0,
-		StatusPaused:      0,
+	m := map[domain.Status]int{
+		domain.StatusQueued:      0,
+		domain.StatusDownloading: 0,
+		domain.StatusProcessing:  0,
+		domain.StatusDone:        0,
+		domain.StatusFailed:      0,
+		domain.StatusPaused:      0,
 	}
 	for _, t := range tasks {
 		m[t.Status]++
@@ -369,7 +336,7 @@ func (s *Store) Counts() (map[Status]int, error) {
 	return m, nil
 }
 
-// Delete removes a task with id from the store. Returns ErrNotFound if not found.
+// Delete removes a task with id from the store. Returns domain.ErrNotFound if not found.
 func (s *Store) Delete(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -385,7 +352,7 @@ func (s *Store) Delete(id string) error {
 		}
 	}
 	if idx == -1 {
-		return ErrNotFound
+		return domain.ErrNotFound
 	}
 	tasks = append(tasks[:idx], tasks[idx+1:]...)
 	return s.saveLocked(tasks)
@@ -401,13 +368,13 @@ func (s *Store) Subscribe(fn func()) {
 // Close releases the store. No-op for the file backend.
 func (s *Store) Close() error { return nil }
 
-func (s *Store) update(id string, fn func(*Task)) error {
-	return s.updateIf(id, func(*Task) bool { return true }, fn)
+func (s *Store) update(id string, fn func(*domain.Task)) error {
+	return s.updateIf(id, func(*domain.Task) bool { return true }, fn)
 }
 
-// updateIf applies fn to task id after checking ok; ok fails with ErrBadState,
-// a missing task with ErrNotFound. Persisted (and broadcast) only on success.
-func (s *Store) updateIf(id string, ok func(*Task) bool, fn func(*Task)) error {
+// updateIf applies fn to task id after checking ok; ok fails with domain.ErrBadState,
+// a missing task with domain.ErrNotFound. Persisted (and broadcast) only on success.
+func (s *Store) updateIf(id string, ok func(*domain.Task) bool, fn func(*domain.Task)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tasks, err := s.loadLocked()
@@ -417,16 +384,16 @@ func (s *Store) updateIf(id string, ok func(*Task) bool, fn func(*Task)) error {
 	for i := range tasks {
 		if tasks[i].ID == id {
 			if !ok(&tasks[i]) {
-				return ErrBadState
+				return domain.ErrBadState
 			}
 			fn(&tasks[i])
 			return s.saveLocked(tasks)
 		}
 	}
-	return ErrNotFound
+	return domain.ErrNotFound
 }
 
-func (s *Store) loadLocked() ([]Task, error) {
+func (s *Store) loadLocked() ([]domain.Task, error) {
 	raw, err := os.ReadFile(s.path)
 	if err != nil {
 		return nil, err
@@ -438,9 +405,9 @@ func (s *Store) loadLocked() ([]Task, error) {
 	return st.Tasks, nil
 }
 
-func (s *Store) saveLocked(tasks []Task) error {
+func (s *Store) saveLocked(tasks []domain.Task) error {
 	if tasks == nil {
-		tasks = []Task{}
+		tasks = []domain.Task{}
 	}
 	raw, err := json.MarshalIndent(diskState{Tasks: tasks}, "", "  ")
 	if err != nil {
@@ -469,3 +436,5 @@ func (s *Store) newID(now time.Time) string {
 	}
 	return fmt.Sprintf("%020d-%010d%s", now.UnixNano(), s.seq.Add(1), suffix)
 }
+
+var _ domain.Repository = (*Store)(nil)

@@ -1,7 +1,8 @@
 // Package server exposes the queue over HTTP with a status page.
 // The page is a Tailwind/daisyUI/htmx UI served from static CDNs (no Go
-// dependencies); Store/Task are local mirrors of the queue API, bridged in
-// production by cli.queueAdapter.
+// dependencies). Task is the HTTP DTO (camelCase) for domain.Task; Store is
+// the port this layer needs, implemented in production by cli.queueAdapter
+// over a domain.Repository.
 package server
 
 import (
@@ -19,7 +20,9 @@ import (
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/recordingurl"
 )
 
-// Task mirrors queue.Task.
+// Task is the HTTP representation (DTO) of domain.Task. Its JSON casing is
+// part of the public API (and the dashboard JS), so it differs from the
+// persisted entity.
 type Task struct {
 	ID           string    `json:"id"`
 	URL          string    `json:"url"`
@@ -37,7 +40,8 @@ type Task struct {
 	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
-// Store is the subset of queue.Store the HTTP layer needs.
+// Store is the port the HTTP layer needs; cli.queueAdapter implements it over
+// a domain.Repository.
 type Store interface {
 	Enqueue(url, recordingID string) (t Task, existed bool, err error)
 	Get(id string) (t Task, ok bool)
@@ -55,8 +59,8 @@ type Subscriber interface {
 	Subscribe(func())
 }
 
-// Sentinel errors Store implementations translate queue errors into, so the
-// HTTP layer maps them to statuses without importing the queue package.
+// Sentinel errors Store implementations translate domain errors into, so the
+// HTTP layer maps them to statuses without importing the domain package.
 var (
 	ErrNotFound = errors.New("server: task not found")
 	ErrBadState = errors.New("server: invalid task state")

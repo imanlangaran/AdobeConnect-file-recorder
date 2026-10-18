@@ -13,15 +13,16 @@ import (
 	"testing"
 
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/config"
-	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/queue"
+	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/domain"
+	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/repository/filestore"
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/server"
 )
 
 // TestFailTaskRetryBudget: attempts within budget requeue, exhausted ones fail.
 func TestFailTaskRetryBudget(t *testing.T) {
 	cfg := config.Config{RetryCount: 2}
-	newTask := func() (*queue.Store, queue.Task) {
-		s, err := queue.Open(t.TempDir())
+	newTask := func() (domain.Repository, domain.Task) {
+		s, err := filestore.Open(t.TempDir())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -41,14 +42,14 @@ func TestFailTaskRetryBudget(t *testing.T) {
 
 	s, task := newTask() // attempts=1 <= 2 → requeue
 	failTask(context.Background(), s, cfg, task, errors.New("boom"))
-	if got, _ := s.Get(task.ID); got.Status != queue.StatusQueued {
+	if got, _ := s.Get(task.ID); got.Status != domain.StatusQueued {
 		t.Fatalf("within budget: status=%s, want queued", got.Status)
 	}
 
 	s, task = newTask()
 	task.Attempts = 3 // > 2 → terminal
 	failTask(context.Background(), s, cfg, task, errors.New("boom"))
-	if got, _ := s.Get(task.ID); got.Status != queue.StatusFailed || got.LastError != "boom" {
+	if got, _ := s.Get(task.ID); got.Status != domain.StatusFailed || got.LastError != "boom" {
 		t.Fatalf("exhausted: %+v, want failed/boom", got)
 	}
 }
@@ -56,7 +57,7 @@ func TestFailTaskRetryBudget(t *testing.T) {
 // TestFailTaskShutdownRequeues: a cancelled context requeues immediately even
 // past the budget (a fresh process retries it).
 func TestFailTaskShutdownRequeues(t *testing.T) {
-	s, err := queue.Open(t.TempDir())
+	s, err := filestore.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +70,7 @@ func TestFailTaskShutdownRequeues(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	failTask(ctx, s, config.Config{RetryCount: 0}, task, errors.New("boom"))
-	if got, _ := s.Get(task.ID); got.Status != queue.StatusQueued {
+	if got, _ := s.Get(task.ID); got.Status != domain.StatusQueued {
 		t.Fatalf("shutdown: status=%s, want queued", got.Status)
 	}
 }
@@ -77,7 +78,7 @@ func TestFailTaskShutdownRequeues(t *testing.T) {
 // TestQueueAdapterDedupeFlag: duplicate URLs report existed=true (200),
 // new ones existed=false (202).
 func TestQueueAdapterDedupeFlag(t *testing.T) {
-	s, err := queue.Open(t.TempDir())
+	s, err := filestore.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +117,7 @@ func TestEnqueueTaskIsBornGrouped(t *testing.T) {
 	defer srv.Close()
 
 	out := t.TempDir()
-	s, err := queue.Open(t.TempDir())
+	s, err := filestore.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +141,7 @@ func TestEnqueueTaskIsBornGrouped(t *testing.T) {
 // and stop-when-idle behaviour.
 func TestAdapterRetryAndStop(t *testing.T) {
 	dir := t.TempDir()
-	s, err := queue.Open(dir)
+	s, err := filestore.Open(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +156,7 @@ func TestAdapterRetryAndStop(t *testing.T) {
 	if a.Stop(task.ID) {
 		t.Fatal("Stop on idle task must report false")
 	}
-	if got, _ := s.Get(task.ID); got.Status != queue.StatusQueued {
+	if got, _ := s.Get(task.ID); got.Status != domain.StatusQueued {
 		t.Fatalf("idle stop mutated task: %+v", got)
 	}
 	// Retry queued -> server.ErrBadState; unknown id -> server.ErrNotFound.
@@ -167,7 +168,7 @@ func TestAdapterRetryAndStop(t *testing.T) {
 	}
 
 	// Reconstruct-only without a cached archive must be rejected.
-	if err := s.SetStatus(task.ID, queue.StatusFailed, "boom"); err != nil {
+	if err := s.SetStatus(task.ID, domain.StatusFailed, "boom"); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Retry(task.ID, "reconstruct"); err == nil ||
@@ -188,7 +189,7 @@ func TestAdapterRetryAndStop(t *testing.T) {
 	if _, err := os.Stat(cache(task.ID)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("full retry must drop the cache, stat: %v", err)
 	}
-	if got, _ := s.Get(task.ID); got.Status != queue.StatusQueued || got.SkipDownload {
+	if got, _ := s.Get(task.ID); got.Status != domain.StatusQueued || got.SkipDownload {
 		t.Fatalf("after full retry: %+v", got)
 	}
 
@@ -196,13 +197,13 @@ func TestAdapterRetryAndStop(t *testing.T) {
 	if err := os.WriteFile(cache(task.ID), []byte("PK\x03\x04rest"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetStatus(task.ID, queue.StatusFailed, "boom"); err != nil {
+	if err := s.SetStatus(task.ID, domain.StatusFailed, "boom"); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Retry(task.ID, "reconstruct"); err != nil {
 		t.Fatalf("reconstruct retry: %v", err)
 	}
-	if got, _ := s.Get(task.ID); got.Status != queue.StatusQueued || !got.SkipDownload {
+	if got, _ := s.Get(task.ID); got.Status != domain.StatusQueued || !got.SkipDownload {
 		t.Fatalf("after reconstruct retry: %+v", got)
 	}
 
@@ -216,7 +217,7 @@ func TestAdapterRetryAndStop(t *testing.T) {
 	if err := a.Retry(task.ID, "resume"); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	if got, _ := s.Get(task.ID); got.Status != queue.StatusQueued || !got.SkipDownload {
+	if got, _ := s.Get(task.ID); got.Status != domain.StatusQueued || !got.SkipDownload {
 		t.Fatalf("after resume: %+v (must keep the reconstruct-only flag)", got)
 	}
 
@@ -232,7 +233,7 @@ func TestAdapterRetryAndStop(t *testing.T) {
 	if !rh.stopped.Load() {
 		t.Fatal("Stop must mark the run stopped")
 	}
-	if got, _ := s.Get(task.ID); got.Status != queue.StatusPaused {
+	if got, _ := s.Get(task.ID); got.Status != domain.StatusPaused {
 		t.Fatalf("after stop: %+v, want paused", got)
 	}
 }
@@ -241,9 +242,9 @@ func TestAdapterRetryAndStop(t *testing.T) {
 // fields — the React table groups rows by them, and /api/tasks must carry
 // the folderID/folderName/group JSON keys.
 func TestToServerTaskKeepsFolder(t *testing.T) {
-	qt := queue.Task{ID: "t1", URL: "https://example.test/r1", RecordingID: "r1",
+	qt := domain.Task{ID: "t1", URL: "https://example.test/r1", RecordingID: "r1",
 		FolderID: "44063", FolderName: "تصوير", Group: "44063_تصوير",
-		Status: queue.StatusQueued}
+		Status: domain.StatusQueued}
 	got := toServerTask(qt)
 	if got.FolderID != "44063" || got.FolderName != "تصوير" || got.Group != "44063_تصوير" {
 		t.Fatalf("toServerTask dropped folder info: %+v", got)
