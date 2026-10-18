@@ -359,6 +359,13 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
     const [deleting, setDeleting] = useState(false);
     const [connState, setConnState] = useState('connecting');
     const [reportModalData, setReportModalData] = useState(null);
+    const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
+
+    const toggleGroup = (key) => setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
 
     useEffect(() => {
       document.documentElement.setAttribute('data-theme', theme);
@@ -504,7 +511,8 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
           const rec = (t.recordingID || '').toLowerCase();
           const url = (t.url || '').toLowerCase();
           const err = (t.lastError || '').toLowerCase();
-          if (!rec.includes(q) && !url.includes(q) && !err.includes(q)) return false;
+          const folder = (t.folderName || '').toLowerCase();
+          if (!rec.includes(q) && !url.includes(q) && !err.includes(q) && !folder.includes(q)) return false;
         }
         return true;
       }).sort((a, b) => {
@@ -519,6 +527,49 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
         return (vA < vB ? -1 : vA > vB ? 1 : 0) * (sortAsc ? 1 : -1);
       });
     }, [tasks, filter, search, sortField, sortAsc]);
+
+    // Mirror the on-disk layout: rows bucketed under their parent folder
+    // (queue.Task.Group), groups ordered by newest visible task, rollup over
+    // every task in the folder (not just the visible ones).
+    const groups = useMemo(() => {
+      const gkey = t => t.group || '_unfiled';
+      const allBy = new Map();
+      tasks.forEach(t => {
+        const k = gkey(t);
+        let a = allBy.get(k);
+        if (!a) { a = { total: 0, done: 0, active: 0, failed: 0, paused: 0, queued: 0 }; allBy.set(k, a); }
+        a.total++;
+        if (t.status === 'done') a.done++;
+        else if (t.status === 'downloading' || t.status === 'processing') a.active++;
+        else if (t.status === 'failed') a.failed++;
+        else if (t.status === 'paused') a.paused++;
+        else if (t.status === 'queued') a.queued++;
+      });
+      const byKey = new Map();
+      // filteredTasks is already sorted by sortField, so bucketing keeps
+      // rows in that order within each group.
+      filteredTasks.forEach(t => {
+        const k = gkey(t);
+        let g = byKey.get(k);
+        if (!g) { g = { key: k, folderID: t.folderID || '', folderName: t.folderName || '', rows: [], newest: '', progs: [] }; byKey.set(k, g); }
+        g.rows.push(t);
+        if ((t.createdAt || '') > g.newest) g.newest = t.createdAt || '';
+        if (t.status === 'downloading' || t.status === 'processing') {
+          const p = parseProgress(t.stage);
+          if (p !== null) g.progs.push(p);
+        }
+      });
+      const out = [...byKey.values()];
+      out.sort((a, b) => (a.newest < b.newest ? 1 : a.newest > b.newest ? -1 : 0));
+      return out.map(g => {
+        const all = allBy.get(g.key) || { total: g.rows.length, done: 0, active: 0, failed: 0, paused: 0, queued: 0 };
+        return Object.assign({}, g, all, {
+          label: g.key === '_unfiled' ? 'Unfiled'
+            : (g.folderID && g.folderName ? `${g.folderID}_${g.folderName}` : g.key),
+          avg: g.progs.length ? Math.round(g.progs.reduce((s, p) => s + p, 0) / g.progs.length) : null
+        });
+      });
+    }, [tasks, filteredTasks]);
 
     const handleSort = (field) => {
       if (sortField === field) {
@@ -707,45 +758,79 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
               </tr>
             </thead>
             <tbody>
-              ${filteredTasks.length === 0 ? html`
+              ${groups.length === 0 ? html`
                 <tr>
                   <td colSpan="8" className="py-8 text-center opacity-60 text-xs">
                     ${tasks.length === 0 ? 'No tasks in queue. Enqueue a recording URL above.' : 'No tasks match current filter/search.'}
                   </td>
                 </tr>
-              ` : filteredTasks.map(t => {
+              ` : groups.map(g => {
+                const isCollapsed = collapsedGroups.has(g.key);
+                const unfiled = g.key === '_unfiled';
                 return html`
-                  <tr key=${t.id} className="hover">
-                    <td className="font-mono text-xs max-w-44 truncate" title=${t.id}>
-                      ${t.recordingID}
-                    </td>
-                    <td>
-                      <span className=${`badge badge-sm ${statusBadgeClass(t.status)}`}>
-                        ${t.status}
-                      </span>
-                    </td>
-                    <td className="text-center text-xs font-mono">${t.attempts}</td>
-                    <td className="max-w-72">
-                      <${DetailCell} task=${t} onOpenReport=${(data) => setReportModalData(data)} />
-                    </td>
-                    <td className="whitespace-nowrap text-xs opacity-75">${formatTime(t.createdAt)}</td>
-                    <td className="whitespace-nowrap text-xs opacity-75">${formatTime(t.updatedAt)}</td>
-                    <td>
-                      <a className="link link-primary text-xs" href=${t.url} target="_blank" rel="noopener">open</a>
-                    </td>
-                    <td className="text-center">
-                      <div className="flex items-center justify-center gap-0.5 flex-wrap">
-                        <${ActionCell} task=${t} onAction=${taskAction} />
-                        <button
-                          className="btn btn-ghost btn-xs text-error hover:bg-error/20"
-                          title="Delete task"
-                          onClick=${() => setDeleteTarget(t)}
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
+                  <${React.Fragment} key=${g.key}>
+                    <tr
+                      className="cursor-pointer select-none bg-base-200/70 hover:bg-base-300"
+                      onClick=${() => toggleGroup(g.key)}
+                    >
+                      <td colSpan="8" className=${`text-xs font-semibold ${unfiled ? 'border border-dashed border-base-300 opacity-70' : ''}`}>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="w-3 text-center">${isCollapsed ? '▸' : '▾'}</span>
+                          <span>📁</span>
+                          <span>${g.label}</span>
+                          ${g.done > 0 && html`<span className="badge badge-xs badge-success font-normal">✓ ${g.done}</span>`}
+                          ${g.active > 0 && html`<span className="badge badge-xs badge-info font-normal">⏳ ${g.active}</span>`}
+                          ${g.failed > 0 && html`<span className="badge badge-xs badge-error font-normal">✗ ${g.failed}</span>`}
+                          ${g.paused > 0 && html`<span className="badge badge-xs badge-ghost font-normal">⏸ ${g.paused}</span>`}
+                          ${g.queued > 0 && html`<span className="badge badge-xs badge-warning font-normal">⏳ ${g.queued}</span>`}
+                          <span className="font-normal opacity-60">${g.done}/${g.total} done</span>
+                          ${g.rows.length !== g.total && html`
+                            <span className="badge badge-xs badge-outline font-normal">${g.rows.length}/${g.total}</span>
+                          `}
+                          ${g.done === g.total && g.total > 0 ? html`
+                            <progress className="progress progress-success h-2 w-40" value="100" max="100"></progress>
+                          ` : g.avg !== null ? html`
+                            <progress className="progress progress-info h-2 w-40" value=${g.avg} max="100"></progress>
+                          ` : null}
+                        </div>
+                      </td>
+                    </tr>
+                    ${!isCollapsed && g.rows.map(t => {
+                      return html`
+                        <tr key=${t.id} className="hover">
+                          <td className="ps-4 font-mono text-xs max-w-44 truncate" title=${t.id}>
+                            <span className="opacity-40">└</span> ${t.recordingID}
+                          </td>
+                          <td>
+                            <span className=${`badge badge-sm ${statusBadgeClass(t.status)}`}>
+                              ${t.status}
+                            </span>
+                          </td>
+                          <td className="text-center text-xs font-mono">${t.attempts}</td>
+                          <td className="max-w-72">
+                            <${DetailCell} task=${t} onOpenReport=${(data) => setReportModalData(data)} />
+                          </td>
+                          <td className="whitespace-nowrap text-xs opacity-75">${formatTime(t.createdAt)}</td>
+                          <td className="whitespace-nowrap text-xs opacity-75">${formatTime(t.updatedAt)}</td>
+                          <td>
+                            <a className="link link-primary text-xs" href=${t.url} target="_blank" rel="noopener">open</a>
+                          </td>
+                          <td className="text-center">
+                            <div className="flex items-center justify-center gap-0.5 flex-wrap">
+                              <${ActionCell} task=${t} onAction=${taskAction} />
+                              <button
+                                className="btn btn-ghost btn-xs text-error hover:bg-error/20"
+                                title="Delete task"
+                                onClick=${() => setDeleteTarget(t)}
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      `;
+                    })}
+                  </${React.Fragment}>
                 `;
               })}
             </tbody>

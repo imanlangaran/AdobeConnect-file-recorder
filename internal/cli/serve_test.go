@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -233,6 +234,28 @@ func TestAdapterRetryAndStop(t *testing.T) {
 	}
 	if got, _ := s.Get(task.ID); got.Status != queue.StatusPaused {
 		t.Fatalf("after stop: %+v, want paused", got)
+	}
+}
+
+// TestToServerTaskKeepsFolder: the HTTP layer must not drop the parent-folder
+// fields — the React table groups rows by them, and /api/tasks must carry
+// the folderID/folderName/group JSON keys.
+func TestToServerTaskKeepsFolder(t *testing.T) {
+	qt := queue.Task{ID: "t1", URL: "https://example.test/r1", RecordingID: "r1",
+		FolderID: "44063", FolderName: "تصوير", Group: "44063_تصوير",
+		Status: queue.StatusQueued}
+	got := toServerTask(qt)
+	if got.FolderID != "44063" || got.FolderName != "تصوير" || got.Group != "44063_تصوير" {
+		t.Fatalf("toServerTask dropped folder info: %+v", got)
+	}
+	b, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"folderID":"44063"`, `"folderName":"تصوير"`, `"group":"44063_تصوير"`} {
+		if !strings.Contains(string(b), want) {
+			t.Fatalf("task JSON missing %s: %s", want, b)
+		}
 	}
 }
 

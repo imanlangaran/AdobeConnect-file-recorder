@@ -452,6 +452,7 @@ func (a queueAdapter) Subscribe(fn func()) {
 func toServerTask(t queue.Task) server.Task {
 	return server.Task{
 		ID: t.ID, URL: t.URL, RecordingID: t.RecordingID,
+		FolderID: t.FolderID, FolderName: t.FolderName, Group: t.Group,
 		Status: string(t.Status), SkipDownload: t.SkipDownload,
 		Stage: t.Stage, Attempts: t.Attempts,
 		LastError: t.LastError, ReportJSON: t.ReportJSON,

@@ -24,6 +24,9 @@ type Task struct {
 	ID           string    `json:"id"`
 	URL          string    `json:"url"`
 	RecordingID  string    `json:"recordingID"`
+	FolderID     string    `json:"folderID,omitempty"`   // parent meeting SCO id
+	FolderName   string    `json:"folderName,omitempty"` // human name of that folder
+	Group        string    `json:"group,omitempty"`      // output subdir: recordings/<group>/
 	Status       string    `json:"status"`
 	SkipDownload bool      `json:"skipDownload,omitempty"` // reconstruct-only retry pending
 	Stage        string    `json:"stage,omitempty"`
