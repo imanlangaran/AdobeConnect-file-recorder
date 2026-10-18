@@ -227,6 +227,38 @@ func TestStatusPageHasTable(t *testing.T) {
 	}
 }
 
+// TestRecName: the dashboard label is the recording's output folder (the
+// "_N" record name), taken from the processed video path; before processing
+// it falls back to the URL-extracted recording ID.
+func TestRecName(t *testing.T) {
+	cases := []struct {
+		name string
+		task Task
+		want string
+	}{
+		{"report path", Task{
+			RecordingID: "abc123",
+			ReportJSON:  `{"video":"/recordings/44063_Class/Class 200_0/recording.mp4"}`,
+		}, "Class 200_0"},
+		{"done stage", Task{
+			RecordingID: "abc123",
+			Stage:       "done: /recordings/_unfiled/Class_1/recording.mp4",
+		}, "Class_1"},
+		{"windows path", Task{
+			RecordingID: "abc123",
+			ReportJSON:  `{"video":"C:\\out\\Group\\Name_2\\recording.mp4"}`,
+		}, "Name_2"},
+		{"not yet processed", Task{RecordingID: "p15rdeovw4ge", Stage: "download 50% (1.0/2.0 MB)"}, "p15rdeovw4ge"},
+		{"no folder in path", Task{RecordingID: "abc123", ReportJSON: `{"video":"recording.mp4"}`}, "abc123"},
+		{"bare id fallback", Task{ID: "task-1"}, "task-1"},
+	}
+	for _, tc := range cases {
+		if got := recName(tc.task); got != tc.want {
+			t.Errorf("%s: recName = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestDeleteTask(t *testing.T) {
 	st := newFake()
 	task, _, err := st.Enqueue("https://example.adobeconnect.com/p15rdeovw4ge/", "p15rdeovw4ge")

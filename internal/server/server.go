@@ -366,6 +366,36 @@ func badge(st string) string {
 // ftime renders a timestamp compactly for the table.
 func ftime(t time.Time) string { return t.Local().Format("15:04 02-Jan-06") }
 
+// recName is the recording's own name (its output folder, e.g.
+// "Class 200_0"): the second-to-last segment of the processed video path,
+// falling back to the URL-extracted recording ID before the task is processed.
+// Mirrors the page's client-side recName so the SSR snapshot and the React
+// table agree.
+func recName(t Task) string {
+	var video string
+	if t.ReportJSON != "" {
+		var rep struct {
+			Video string `json:"video"`
+		}
+		if json.Unmarshal([]byte(t.ReportJSON), &rep) == nil {
+			video = rep.Video
+		}
+	}
+	if video == "" && strings.HasPrefix(t.Stage, "done:") {
+		video = strings.TrimSpace(strings.TrimPrefix(t.Stage, "done:"))
+	}
+	if video != "" {
+		parts := strings.FieldsFunc(video, func(r rune) bool { return r == '/' || r == '\\' })
+		if len(parts) >= 2 {
+			return parts[len(parts)-2]
+		}
+	}
+	if t.RecordingID != "" {
+		return t.RecordingID
+	}
+	return t.ID
+}
+
 var dashTmpl = template.Must(template.New("dash").Funcs(template.FuncMap{
 	"short": shortID,
 	"badge": badge,
@@ -376,12 +406,13 @@ var dashTmpl = template.Must(template.New("dash").Funcs(template.FuncMap{
 }).Parse(dashFragment))
 
 var pageTmpl = template.Must(template.New("page").Funcs(template.FuncMap{
-	"short": shortID,
-	"badge": badge,
-	"count": count,
-	"add":   add,
-	"total": total,
-	"ftime": ftime,
+	"short":   shortID,
+	"badge":   badge,
+	"count":   count,
+	"add":     add,
+	"total":   total,
+	"ftime":   ftime,
+	"recName": recName,
 }).Parse(pageShell))
 
 // dashFragment is the live region polled by htmx every 3s: status cards,

@@ -44,7 +44,7 @@
         <tbody>
           {{range .Tasks}}
           <tr>
-            <td class="font-mono text-xs">{{.RecordingID}}</td>
+            <td class="text-xs">{{recName .}}</td>
             <td><span class="badge badge-sm {{badge .Status}}">{{.Status}}</span></td>
             <td class="text-xs">{{if .LastError}}{{.LastError}}{{else if .Stage}}{{.Stage}}{{else if .ReportJSON}}report ready{{else}}--{{end}}</td>
             <td class="text-center text-xs opacity-40">--</td>
@@ -99,6 +99,24 @@
     } catch (e) {
       return null;
     }
+  }
+
+  // recName is the recording's own name (its output folder, e.g.
+  // "تصوير … (صدوقي يزدي - گروه 200)_0"): the second-to-last segment of the
+  // processed video path. Until the task is processed, fall back to the
+  // URL-extracted recording ID.
+  function recName(t) {
+    const report = parseJSON(t.reportJSON);
+    let video = report && report.video;
+    if (!video) {
+      const m = /^done:\s*(.+)/.exec(t.stage || '');
+      if (m) video = m[1];
+    }
+    if (video) {
+      const parts = video.split(/[\\/]/).filter(Boolean);
+      if (parts.length >= 2) return parts[parts.length - 2];
+    }
+    return t.recordingID || t.id;
   }
 
   function parseProgress(stage) {
@@ -178,7 +196,7 @@
           <div className="flex items-center justify-between gap-2 border-b border-base-300 pb-3 mb-4">
             <h3 className="flex items-center gap-2 font-bold text-base min-w-0">
               <span className=${`badge badge-sm ${statusBadgeClass(task.status)}`}>${task.status}</span>
-              <span className="font-mono truncate" title=${task.id}>${task.recordingID}</span>
+              <span className="truncate" title=${task.id}>${recName(task)}</span>
             </h3>
             <button className="btn btn-sm btn-circle btn-ghost" onClick=${onClose}>✕</button>
           </div>
@@ -299,7 +317,7 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
   function DetailCell({ task }) {
     if (task.lastError) {
       return html`
-        <div className="max-w-72">
+        <div className="min-w-0">
           <span className="text-error font-medium text-xs break-words" title=${task.lastError}>
             ${task.lastError}
           </span>
@@ -309,8 +327,8 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
     if (task.stage) {
       const prog = parseProgress(task.stage);
       return html`
-        <div className="flex flex-col gap-1 max-w-72">
-          <span className="font-mono text-info text-xs truncate" title=${task.stage}>${task.stage}</span>
+        <div className="flex flex-col gap-1 min-w-0">
+          <span className="font-mono text-info text-xs break-words" title=${task.stage}>${task.stage}</span>
           ${prog !== null && html`
             <progress className="progress progress-info w-32 h-1.5" value=${prog} max="100"></progress>
           `}
@@ -321,7 +339,7 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
       const data = parseJSON(task.reportJSON);
       if (data && (data.duration_ms || data.video || data.video_bytes)) {
         return html`
-          <div className="flex flex-wrap items-center gap-1.5 max-w-72">
+          <div className="flex flex-wrap items-center gap-1.5">
             ${data.duration_ms ? html`
               <span className="badge badge-xs badge-neutral font-mono font-normal">
                 ⏱ ${formatDuration(data.duration_ms)}
@@ -554,16 +572,17 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
         if (search) {
           const q = search.toLowerCase();
           const rec = (t.recordingID || '').toLowerCase();
+          const name = recName(t).toLowerCase();
           const url = (t.url || '').toLowerCase();
           const err = (t.lastError || '').toLowerCase();
           const folder = (t.folderName || '').toLowerCase();
-          if (!rec.includes(q) && !url.includes(q) && !err.includes(q) && !folder.includes(q)) return false;
+          if (!rec.includes(q) && !name.includes(q) && !url.includes(q) && !err.includes(q) && !folder.includes(q)) return false;
         }
         return true;
       }).sort((a, b) => {
         let vA = '', vB = '';
         if (sortField === 'rec') {
-          vA = a.recordingID || ''; vB = b.recordingID || '';
+          vA = recName(a); vB = recName(b);
         } else if (sortField === 'status') {
           vA = a.status || ''; vB = b.status || '';
         } else {
@@ -779,7 +798,7 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
           <div className="flex items-center gap-2">
             <input
               type="text"
-              placeholder="Search ID or URL..."
+              placeholder="Search name, ID or URL..."
               className="input input-bordered input-xs w-48 bg-base-200"
               value=${search}
               onInput=${e => setSearch(e.target.value)}
@@ -796,10 +815,10 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
           <table className="table table-zebra table-sm">
             <thead>
               <tr className="border-b border-base-300">
-                <th><button className="link link-hover" onClick=${() => handleSort('rec')}>Recording ${sortField === 'rec' ? (sortAsc ? '▲' : '▼') : ''}</button></th>
-                <th><button className="link link-hover" onClick=${() => handleSort('status')}>Status ${sortField === 'status' ? (sortAsc ? '▲' : '▼') : ''}</button></th>
-                <th>Progress / Detail</th>
-                <th className="text-center">Action</th>
+                <th className="w-[34%]"><button className="link link-hover" onClick=${() => handleSort('rec')}>Recording ${sortField === 'rec' ? (sortAsc ? '▲' : '▼') : ''}</button></th>
+                <th className="whitespace-nowrap"><button className="link link-hover" onClick=${() => handleSort('status')}>Status ${sortField === 'status' ? (sortAsc ? '▲' : '▼') : ''}</button></th>
+                <th className="w-[44%]">Progress / Detail</th>
+                <th className="text-center whitespace-nowrap">Action</th>
               </tr>
             </thead>
             <tbody>
@@ -848,18 +867,18 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
                           title="Click for full task details"
                           onClick=${(e) => { if (e.target.closest('button, a')) return; setTaskModalId(t.id); }}
                         >
-                          <td className="ps-4 font-mono text-xs max-w-44 truncate" title=${t.id}>
-                            <span className="opacity-40">└</span> ${t.recordingID}
+                          <td className="ps-4 text-xs align-top break-words" title=${t.id}>
+                            <span className="opacity-40">└</span> ${recName(t)}
                           </td>
-                          <td>
+                          <td className="align-top">
                             <span className=${`badge badge-sm ${statusBadgeClass(t.status)}`}>
                               ${t.status}
                             </span>
                           </td>
-                          <td className="max-w-72">
+                          <td className="align-top">
                             <${DetailCell} task=${t} />
                           </td>
-                          <td className="text-center">
+                          <td className="text-center align-top">
                             <div className="flex items-center justify-center gap-0.5 flex-wrap">
                               <${ActionCell} task=${t} onAction=${taskAction} />
                               <button
@@ -893,7 +912,7 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
                 Confirm Deletion
               </h3>
               <p className="py-3 text-sm">
-                Are you sure you want to remove recording <strong>${deleteTarget.recordingID}</strong> from the queue?
+                Are you sure you want to remove recording <strong>${recName(deleteTarget)}</strong> from the queue?
               </p>
               <p className="text-xs opacity-60 font-mono mb-4">Task ID: ${deleteTarget.id}</p>
               <div className="modal-action">
