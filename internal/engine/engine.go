@@ -90,7 +90,7 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 				return rep, err
 			}
 		}
-		if cachedArchive(opt.CachePath) {
+		if HasCachedArchive(opt.CachePath) {
 			status("using cached archive") // retry after a reconstruct failure: don't re-download
 			zipPath = opt.CachePath
 		} else {
@@ -341,10 +341,10 @@ func Sanitize(s string) string {
 	return out
 }
 
-// cachedArchive reports whether path holds a complete archive worth reusing.
+// HasCachedArchive reports whether path holds a complete archive worth reusing.
 // download.File only renames .part into place after a validated full copy, so
 // a ZIP signature at path means the previous attempt finished the download.
-func cachedArchive(path string) bool {
+func HasCachedArchive(path string) bool {
 	if path == "" {
 		return false
 	}

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -75,15 +76,16 @@ func runServe(args []string) int {
 		n = 1
 	}
 	var wg sync.WaitGroup
+	rs := newRuns()
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			worker(ctx, store, cfg)
+			worker(ctx, store, cfg, rs)
 		}()
 	}
 
-	srv := &http.Server{Addr: ":" + strconv.Itoa(cfg.Port), Handler: server.New(queueAdapter{store, cfg})}
+	srv := &http.Server{Addr: ":" + strconv.Itoa(cfg.Port), Handler: server.New(queueAdapter{store, cfg, rs})}
 	go func() {
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -103,7 +105,7 @@ func runServe(args []string) int {
 
 // worker claims tasks until ctx is cancelled. Claim() already marks the task
 // downloading and counts the attempt.
-func worker(ctx context.Context, store *queue.Store, cfg config.Config) {
+func worker(ctx context.Context, store *queue.Store, cfg config.Config, rs *runs) {
 	w, h := cfg.ResolutionDims()
 	for {
 		if ctx.Err() != nil {
@@ -116,11 +118,46 @@ func worker(ctx context.Context, store *queue.Store, cfg config.Config) {
 			}
 			continue
 		}
-		processTask(ctx, store, cfg, task, w, h)
+		processTask(ctx, store, cfg, task, w, h, rs)
 	}
 }
 
-func processTask(ctx context.Context, store *queue.Store, cfg config.Config, task queue.Task, w, h int) {
+// run is one in-flight task; stopped records a user stop so the worker can
+// tell it apart from a shutdown or a plain failure.
+type run struct {
+	cancel  context.CancelFunc
+	stopped atomic.Bool
+}
+
+// runs maps task ID -> in-flight run so the API can cancel a single task.
+type runs struct {
+	mu sync.Mutex
+	m  map[string]*run
+}
+
+func newRuns() *runs { return &runs{m: make(map[string]*run)} }
+
+func (r *runs) add(id string, cancel context.CancelFunc) *run {
+	rh := &run{cancel: cancel}
+	r.mu.Lock()
+	r.m[id] = rh
+	r.mu.Unlock()
+	return rh
+}
+
+func (r *runs) get(id string) *run {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.m[id]
+}
+
+func (r *runs) remove(id string) {
+	r.mu.Lock()
+	delete(r.m, id)
+	r.mu.Unlock()
+}
+
+func processTask(ctx context.Context, store *queue.Store, cfg config.Config, task queue.Task, w, h int, rs *runs) {
 	var lastStageUpdate time.Time
 	var lastStageStr string
 	setStage := func(s string, force bool) {
@@ -169,7 +206,13 @@ func processTask(ctx context.Context, store *queue.Store, cfg config.Config, tas
 	}
 	setStage("starting", true)
 	cache := filepath.Join(cfg.DataDir, "cache", task.ID+".zip")
-	rep, err := engine.Run(ctx, engine.Options{
+	runCtx, cancel := context.WithCancel(ctx)
+	rh := rs.add(task.ID, cancel)
+	defer func() {
+		cancel()
+		rs.remove(task.ID)
+	}()
+	opts := engine.Options{
 		ZipURL: ru.ZipURL(),
 		Title:  title,
 		// Parent folder resolved at registration ("", never for new tasks:
@@ -194,8 +237,22 @@ func processTask(ctx context.Context, store *queue.Store, cfg config.Config, tas
 		// Retries must start clean: a crash after recording.mp4 was written
 		// would otherwise fail with "output already exists".
 		Overwrite: true,
-	})
+	}
+	if task.SkipDownload {
+		// Reconstruct-only retry: point straight at the cached archive.
+		// queue.Retry validated it before requeueing; Extract fails loudly
+		// if it vanished meanwhile.
+		opts.ZipPath = cache
+	}
+	rep, err := engine.Run(runCtx, opts)
 	if err != nil {
+		if rh.stopped.Load() { // user stop: hold, don't burn the retry budget
+			if serr := store.SetStatus(task.ID, queue.StatusPaused, "stopped by user"); serr != nil {
+				fmt.Fprintf(os.Stderr, "[%s] set paused: %v\n", task.ID, serr)
+			}
+			status("stopped by user")
+			return
+		}
 		failTask(ctx, store, cfg, task, err)
 		return
 	}
@@ -264,6 +321,60 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 type queueAdapter struct {
 	q   *queue.Store
 	cfg config.Config
+	rs  *runs
+}
+
+// Retry requeues a failed/paused/done task. mode:
+//   - "full": drop the cached archive, re-download, reconstruct;
+//   - "reconstruct": reuse the cached archive (rejected when there is none);
+//   - "resume": paused task back to work as-is (attempts/cache kept).
+func (a queueAdapter) Retry(id, mode string) error {
+	cache := filepath.Join(a.cfg.DataDir, "cache", id+".zip")
+	switch mode {
+	case "resume":
+		return toServerErr(a.q.Resume(id))
+	case "reconstruct":
+		if !engine.HasCachedArchive(cache) {
+			return errors.New("no cached archive for this task - use full retry")
+		}
+		return toServerErr(a.q.Retry(id, true))
+	default: // "full"
+		// State check first: don't drop the cache of a task Retry would
+		// reject (queued/running -> ErrBadState).
+		if _, err := a.q.Get(id); err != nil {
+			return toServerErr(err)
+		}
+		if err := os.Remove(cache); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return toServerErr(a.q.Retry(id, false))
+	}
+}
+
+// toServerErr translates queue errors into the HTTP layer's sentinels.
+func toServerErr(err error) error {
+	switch {
+	case errors.Is(err, queue.ErrNotFound):
+		return server.ErrNotFound
+	case errors.Is(err, queue.ErrBadState):
+		return server.ErrBadState
+	}
+	return err
+}
+
+// Stop cancels an in-flight task and parks it in paused. False when the task
+// is not running (nothing to stop).
+func (a queueAdapter) Stop(id string) bool {
+	rh := a.rs.get(id)
+	if rh == nil {
+		return false
+	}
+	rh.stopped.Store(true)
+	rh.cancel()
+	// The worker's error path also lands on paused; Pause here so the UI
+	// reflects the stop immediately.
+	_ = a.q.Pause(id)
+	return true
 }
 
 func (a queueAdapter) Enqueue(url, recordingID string) (server.Task, bool, error) {
@@ -341,7 +452,8 @@ func (a queueAdapter) Subscribe(fn func()) {
 func toServerTask(t queue.Task) server.Task {
 	return server.Task{
 		ID: t.ID, URL: t.URL, RecordingID: t.RecordingID,
-		Status: string(t.Status), Stage: t.Stage, Attempts: t.Attempts,
+		Status: string(t.Status), SkipDownload: t.SkipDownload,
+		Stage: t.Stage, Attempts: t.Attempts,
 		LastError: t.LastError, ReportJSON: t.ReportJSON,
 		CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
 	}

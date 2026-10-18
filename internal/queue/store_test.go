@@ -240,6 +240,90 @@ func TestSetGroup(t *testing.T) {
 	}
 }
 
+func TestRetryResumePause(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	task, _, err := s.Enqueue("https://example.test/r1", "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, ok := s.Claim()
+	if !ok || claimed.Attempts != 1 {
+		t.Fatalf("claim: %+v, want attempts=1", claimed)
+	}
+
+	// Pause: only running tasks, only existing ones.
+	if err := s.Pause("missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Pause missing: %v", err)
+	}
+	if err := s.SetStatus(task.ID, StatusQueued, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Pause(task.ID); !errors.Is(err, ErrBadState) {
+		t.Fatalf("Pause queued must be ErrBadState, got %v", err)
+	}
+	if _, ok := s.Claim(); !ok { // re-claim for the pause path
+		t.Fatal("Claim: nothing to claim")
+	}
+	if err := s.Pause(task.ID); err != nil {
+		t.Fatalf("Pause running: %v", err)
+	}
+	got, _ := s.Get(task.ID)
+	if got.Status != StatusPaused || got.Stage != "" {
+		t.Fatalf("after Pause: %+v", got)
+	}
+	if _, ok := s.Claim(); ok {
+		t.Fatal("Claim must skip paused tasks")
+	}
+
+	// Resume: only from paused, attempts preserved.
+	if err := s.Resume(task.ID); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	got, _ = s.Get(task.ID)
+	if got.Status != StatusQueued || got.Attempts != claimed.Attempts+1 { // claimed twice
+		t.Fatalf("after Resume: %+v", got)
+	}
+	if err := s.Resume(task.ID); !errors.Is(err, ErrBadState) { // now queued
+		t.Fatalf("Resume queued must be ErrBadState, got %v", err)
+	}
+
+	// Retry: only from failed/paused/done; resets attempts, sets mode.
+	if err := s.Retry(task.ID, true); !errors.Is(err, ErrBadState) {
+		t.Fatalf("Retry queued must be ErrBadState, got %v", err)
+	}
+	if err := s.SetStatus(task.ID, StatusFailed, "boom"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Retry(task.ID, true); err != nil {
+		t.Fatalf("Retry failed task: %v", err)
+	}
+	got, _ = s.Get(task.ID)
+	if got.Status != StatusQueued || got.Attempts != 0 || !got.SkipDownload ||
+		got.LastError != "" || got.Stage != "" {
+		t.Fatalf("after reconstruct Retry: %+v", got)
+	}
+
+	// Counts includes paused.
+	if _, ok := s.Claim(); !ok {
+		t.Fatal("Claim: nothing to claim")
+	}
+	if err := s.Pause(task.ID); err != nil {
+		t.Fatalf("Pause: %v", err)
+	}
+	counts, err := s.Counts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts[StatusPaused] != 1 {
+		t.Fatalf("counts missing paused: %+v", counts)
+	}
+}
+
 func TestDeleteAndSubscribe(t *testing.T) {
 	s, err := Open(t.TempDir())
 	if err != nil {

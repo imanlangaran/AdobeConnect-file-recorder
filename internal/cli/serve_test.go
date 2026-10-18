@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/config"
@@ -131,6 +132,107 @@ func TestEnqueueTaskIsBornGrouped(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(out, claimed.Group, "folder.json")); err != nil {
 		t.Fatalf("folder.json missing: %v", err)
+	}
+}
+
+// TestAdapterRetryAndStop: the bridge's retry modes (full/reconstruct/resume)
+// and stop-when-idle behaviour.
+func TestAdapterRetryAndStop(t *testing.T) {
+	dir := t.TempDir()
+	s, err := queue.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := queueAdapter{q: s, cfg: config.Config{DataDir: dir}, rs: newRuns()}
+	cache := func(id string) string { return filepath.Join(dir, "cache", id+".zip") }
+
+	task, _, err := s.Enqueue("https://example.test/r1", "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Stop: nothing running -> false, task untouched.
+	if a.Stop(task.ID) {
+		t.Fatal("Stop on idle task must report false")
+	}
+	if got, _ := s.Get(task.ID); got.Status != queue.StatusQueued {
+		t.Fatalf("idle stop mutated task: %+v", got)
+	}
+	// Retry queued -> server.ErrBadState; unknown id -> server.ErrNotFound.
+	if err := a.Retry(task.ID, "full"); !errors.Is(err, server.ErrBadState) {
+		t.Fatalf("retry queued: %v, want ErrBadState", err)
+	}
+	if err := a.Retry("missing", "full"); !errors.Is(err, server.ErrNotFound) {
+		t.Fatalf("retry missing: %v, want ErrNotFound", err)
+	}
+
+	// Reconstruct-only without a cached archive must be rejected.
+	if err := s.SetStatus(task.ID, queue.StatusFailed, "boom"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Retry(task.ID, "reconstruct"); err == nil ||
+		!strings.Contains(err.Error(), "no cached archive") {
+		t.Fatalf("reconstruct w/o cache: %v", err)
+	}
+
+	// Full retry drops the stale cache, requeues with a fresh budget.
+	if err := os.MkdirAll(filepath.Dir(cache(task.ID)), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cache(task.ID), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Retry(task.ID, "full"); err != nil {
+		t.Fatalf("full retry: %v", err)
+	}
+	if _, err := os.Stat(cache(task.ID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("full retry must drop the cache, stat: %v", err)
+	}
+	if got, _ := s.Get(task.ID); got.Status != queue.StatusQueued || got.SkipDownload {
+		t.Fatalf("after full retry: %+v", got)
+	}
+
+	// Valid cache -> reconstruct-only retry sets SkipDownload.
+	if err := os.WriteFile(cache(task.ID), []byte("PK\x03\x04rest"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetStatus(task.ID, queue.StatusFailed, "boom"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Retry(task.ID, "reconstruct"); err != nil {
+		t.Fatalf("reconstruct retry: %v", err)
+	}
+	if got, _ := s.Get(task.ID); got.Status != queue.StatusQueued || !got.SkipDownload {
+		t.Fatalf("after reconstruct retry: %+v", got)
+	}
+
+	// Resume: only a paused task, via the running-task stop path.
+	if _, ok := s.Claim(); !ok {
+		t.Fatal("Claim: nothing to claim")
+	}
+	if err := s.Pause(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Retry(task.ID, "resume"); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if got, _ := s.Get(task.ID); got.Status != queue.StatusQueued || !got.SkipDownload {
+		t.Fatalf("after resume: %+v (must keep the reconstruct-only flag)", got)
+	}
+
+	// Stop with a registered run: cancels and parks the task in paused.
+	if _, ok := s.Claim(); !ok { // a registered run implies an active task
+		t.Fatal("Claim: nothing to claim")
+	}
+	rh := a.rs.add(task.ID, func() {})
+	defer a.rs.remove(task.ID)
+	if !a.Stop(task.ID) {
+		t.Fatal("Stop on registered run must report true")
+	}
+	if !rh.stopped.Load() {
+		t.Fatal("Stop must mark the run stopped")
+	}
+	if got, _ := s.Get(task.ID); got.Status != queue.StatusPaused {
+		t.Fatalf("after stop: %+v, want paused", got)
 	}
 }
 

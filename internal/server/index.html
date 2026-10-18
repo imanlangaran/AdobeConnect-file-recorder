@@ -127,6 +127,7 @@
       case 'failed': return 'badge-error text-error-content';
       case 'downloading':
       case 'processing': return 'badge-info text-info-content animate-pulse';
+      case 'paused': return 'badge-ghost text-base-content';
       case 'queued': return 'badge-warning text-warning-content';
       default: return 'badge-ghost';
     }
@@ -297,6 +298,53 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
     return html`<span className="text-xs opacity-40">--</span>`;
   }
 
+  // ActionCell: per-status buttons. Stop cancels a running task (paused);
+  // Resume continues a paused one; Full/Reconstruct requeue failed or done
+  // tasks (full drops the cached archive, reconstruct reuses it).
+  function ActionCell({ task, onAction }) {
+    if (task.status === 'downloading' || task.status === 'processing') {
+      return html`
+        <button
+          className="btn btn-ghost btn-xs text-warning hover:bg-warning/20"
+          title="Stop: cancel the current run and pause this task"
+          onClick=${() => onAction(task.id, 'stop')}
+        >
+          ⏸ Stop
+        </button>
+      `;
+    }
+    if (task.status === 'paused') {
+      return html`
+        <button
+          className="btn btn-ghost btn-xs text-info hover:bg-info/20"
+          title="Resume: continue where it stopped (reuses the cached archive when valid)"
+          onClick=${() => onAction(task.id, 'retry', 'resume')}
+        >
+          ▶ Resume
+        </button>
+      `;
+    }
+    if (task.status === 'failed' || task.status === 'done') {
+      return html`
+        <button
+          className="btn btn-ghost btn-xs"
+          title="Retry full: delete the cached archive, download it again, then reconstruct"
+          onClick=${() => onAction(task.id, 'retry', 'full')}
+        >
+          ↻ Full
+        </button>
+        <button
+          className="btn btn-ghost btn-xs"
+          title="Reconstruct only: reuse the already-downloaded archive (no re-download)"
+          onClick=${() => onAction(task.id, 'retry', 'reconstruct')}
+        >
+          ↻ Reconstruct
+        </button>
+      `;
+    }
+    return null;
+  }
+
   function App() {
     const [theme, setTheme] = useState(() => localStorage.getItem('ac-theme') || 'night');
     const [tasks, setTasks] = useState([]);
@@ -354,12 +402,13 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
     }, [loadTasks]);
 
     const counts = useMemo(() => {
-      const c = { queued: 0, active: 0, done: 0, failed: 0, total: tasks.length };
+      const c = { queued: 0, active: 0, done: 0, failed: 0, paused: 0, total: tasks.length };
       tasks.forEach(t => {
         if (t.status === 'queued') c.queued++;
         else if (t.status === 'downloading' || t.status === 'processing') c.active++;
         else if (t.status === 'done') c.done++;
         else if (t.status === 'failed') c.failed++;
+        else if (t.status === 'paused') c.paused++;
       });
       return c;
     }, [tasks]);
@@ -418,12 +467,38 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
       }
     };
 
+    // taskAction posts stop/retry; errors (e.g. "no cached archive") surface
+    // in the form alert since the API answers JSON on non-2xx.
+    const taskAction = async (id, action, mode) => {
+      try {
+        const res = await fetch(
+          '/api/tasks/' + encodeURIComponent(id) + '/' + action + (mode ? '?mode=' + mode : ''),
+          { method: 'POST' }
+        );
+        const data = await res.json().catch(() => ({}));
+        const row = tasks.find(x => x.id === id);
+        const label = row ? (row.recordingID || id) : id;
+        if (!res.ok) {
+          setFormMsg({ type: 'error', text: (data.error || action + ' failed') + ' (' + label + ')' });
+        } else {
+          setFormMsg({
+            type: 'info',
+            text: (action === 'stop' ? 'Stopping: ' : 'Requeued (' + mode + '): ') + label
+          });
+        }
+        loadTasks();
+      } catch (err) {
+        setFormMsg({ type: 'error', text: 'Network error: ' + err.message });
+      }
+    };
+
     const filteredTasks = useMemo(() => {
       return tasks.filter(t => {
         if (filter === 'queued' && t.status !== 'queued') return false;
         if (filter === 'active' && t.status !== 'downloading' && t.status !== 'processing') return false;
         if (filter === 'done' && t.status !== 'done') return false;
         if (filter === 'failed' && t.status !== 'failed') return false;
+        if (filter === 'paused' && t.status !== 'paused') return false;
         if (search) {
           const q = search.toLowerCase();
           const rec = (t.recordingID || '').toLowerCase();
@@ -563,6 +638,33 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
           </div>
         </div>
 
+        <!-- Task-flow guide -->
+        <details className="mb-4 rounded-box border border-base-300 bg-base-200 shadow-sm">
+          <summary className="cursor-pointer px-4 py-3 text-sm font-semibold select-none">
+            How tasks flow (?)
+          </summary>
+          <div className="space-y-2 px-4 pb-4 text-xs opacity-90">
+            <ol className="list-inside list-decimal space-y-1">
+              <li><span className=${'badge badge-sm ' + statusBadgeClass('queued')}>queued</span> — waiting for a free worker; the oldest task is picked first.</li>
+              <li><span className=${'badge badge-sm ' + statusBadgeClass('downloading')}>downloading</span> — fetching the recording archive (ZIP). It is validated and cached, so a later retry does not re-download it.</li>
+              <li><span className=${'badge badge-sm ' + statusBadgeClass('processing')}>processing</span> — extracting the archive, reconstructing the video with ffmpeg, checking its duration, then writing sidecars (chat log, attendees, report).</li>
+              <li><span className=${'badge badge-sm ' + statusBadgeClass('done')}>done</span> — <span className="font-mono">recording.mp4</span> and sidecars are in the output folder; the cached archive is deleted.</li>
+            </ol>
+            <p>
+              <span className=${'badge badge-sm ' + statusBadgeClass('failed')}>failed</span> — the run errored. Automatic retries happen first
+              (<span className="font-mono">RETRY_COUNT</span>, 5s apart); afterwards the task stops here until you act:
+            </p>
+            <ul className="list-inside list-disc space-y-1">
+              <li><b>↻ Full</b> — deletes the cached archive, downloads it again from the server, then reconstructs. Use when the download itself was bad.</li>
+              <li><b>↻ Reconstruct</b> — reuses the already-downloaded archive and only re-runs extraction + reconstruction. Use when the download is fine but the build failed (much faster, no network). Rejected with &ldquo;no cached archive&rdquo; if nothing valid was downloaded.</li>
+            </ul>
+            <p>
+              <span className=${'badge badge-sm ' + statusBadgeClass('paused')}>paused</span> — stopped by you with <b>⏸ Stop</b>: the current run is cancelled and no worker touches the task until
+              <b>▶ Resume</b> puts it back in the queue (attempts and cached archive are kept). Retry buttons also appear on <b>done</b> tasks to re-run them from scratch.
+            </p>
+          </div>
+        </details>
+
         <!-- Filter & Search Controls -->
         <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
           <div className="flex flex-wrap gap-1.5">
@@ -571,6 +673,7 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
             <button className=${`btn btn-xs ${filter === 'queued' ? 'btn-warning' : 'btn-ghost'}`} onClick=${() => setFilter('queued')}>Queued (${counts.queued})</button>
             <button className=${`btn btn-xs ${filter === 'done' ? 'btn-success' : 'btn-ghost'}`} onClick=${() => setFilter('done')}>Done (${counts.done})</button>
             <button className=${`btn btn-xs ${filter === 'failed' ? 'btn-error' : 'btn-ghost'}`} onClick=${() => setFilter('failed')}>Failed (${counts.failed})</button>
+            <button className=${`btn btn-xs ${filter === 'paused' ? 'btn-ghost border-base-content' : 'btn-ghost'}`} onClick=${() => setFilter('paused')}>Paused (${counts.paused})</button>
           </div>
 
           <div className="flex items-center gap-2">
@@ -631,13 +734,16 @@ ${typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data)}
                       <a className="link link-primary text-xs" href=${t.url} target="_blank" rel="noopener">open</a>
                     </td>
                     <td className="text-center">
-                      <button
-                        className="btn btn-ghost btn-xs text-error hover:bg-error/20"
-                        title="Delete task"
-                        onClick=${() => setDeleteTarget(t)}
-                      >
-                        ✕
-                      </button>
+                      <div className="flex items-center justify-center gap-0.5 flex-wrap">
+                        <${ActionCell} task=${t} onAction=${taskAction} />
+                        <button
+                          className="btn btn-ghost btn-xs text-error hover:bg-error/20"
+                          title="Delete task"
+                          onClick=${() => setDeleteTarget(t)}
+                        >
+                          ✕
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 `;

@@ -28,27 +28,33 @@ const (
 	StatusProcessing  Status = "processing"
 	StatusDone        Status = "done"
 	StatusFailed      Status = "failed"
+	StatusPaused      Status = "paused" // stopped by the user; resume requeues it
 )
 
 // Task is a single queued recording job.
 type Task struct {
-	ID          string    `json:"id"`
-	URL         string    `json:"url"`
-	RecordingID string    `json:"recording_id"`
-	FolderID    string    `json:"folder_id,omitempty"`   // parent meeting SCO id (machine key)
-	FolderName  string    `json:"folder_name,omitempty"` // human name of that folder
-	Group       string    `json:"group,omitempty"`       // output subdir under OUT_DIR
-	Status      Status    `json:"status"`
-	Stage       string    `json:"stage,omitempty"`
-	Attempts    int       `json:"attempts"`
-	LastError   string    `json:"last_error,omitempty"`
-	ReportJSON  string    `json:"report_json,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID           string    `json:"id"`
+	URL          string    `json:"url"`
+	RecordingID  string    `json:"recording_id"`
+	FolderID     string    `json:"folder_id,omitempty"`   // parent meeting SCO id (machine key)
+	FolderName   string    `json:"folder_name,omitempty"` // human name of that folder
+	Group        string    `json:"group,omitempty"`       // output subdir under OUT_DIR
+	Status       Status    `json:"status"`
+	SkipDownload bool      `json:"skip_download,omitempty"` // reconstruct-only retry: reuse the cached archive
+	Stage        string    `json:"stage,omitempty"`
+	Attempts     int       `json:"attempts"`
+	LastError    string    `json:"last_error,omitempty"`
+	ReportJSON   string    `json:"report_json,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // ErrNotFound is returned when no task with the given ID exists.
 var ErrNotFound = errors.New("queue: task not found")
+
+// ErrBadState is returned by Retry/Resume/Pause for a status transition that
+// is not allowed (e.g. pausing a queued task).
+var ErrBadState = errors.New("queue: invalid task state")
 
 // Store is a mutex-guarded, file-backed task queue. Every mutation is
 // persisted atomically (write temp file + rename) so a crash never leaves a
@@ -154,7 +160,7 @@ func (s *Store) Claim() (Task, bool) {
 func (s *Store) SetStatus(id string, st Status, lastErr string) error {
 	return s.update(id, func(t *Task) {
 		t.Status = st
-		if st == StatusFailed || st == StatusQueued {
+		if st == StatusFailed || st == StatusQueued || st == StatusPaused {
 			t.Stage = ""
 		}
 		t.LastError = lastErr
@@ -222,6 +228,44 @@ func (s *Store) RequeueActive() (int, error) {
 		return 0, nil
 	}
 	return n, s.saveLocked(tasks)
+}
+
+// Retry requeues a terminal (or paused) task with a fresh attempt budget.
+// skipDownload asks for reconstruct-only: the worker reuses the cached
+// archive instead of downloading it again. Returns ErrBadState when the task
+// is queued or actively running.
+func (s *Store) Retry(id string, skipDownload bool) error {
+	return s.updateIf(id, func(t *Task) bool {
+		return t.Status == StatusFailed || t.Status == StatusPaused || t.Status == StatusDone
+	}, func(t *Task) {
+		t.Status = StatusQueued
+		t.SkipDownload = skipDownload
+		t.Attempts = 0
+		t.Stage = ""
+		t.LastError = ""
+		t.UpdatedAt = time.Now().UTC()
+	})
+}
+
+// Resume requeues a paused task as-is: attempts, last error and the
+// reconstruct-only flag survive, so the pipeline picks up where it stopped.
+func (s *Store) Resume(id string) error {
+	return s.updateIf(id, func(t *Task) bool { return t.Status == StatusPaused },
+		func(t *Task) {
+			t.Status = StatusQueued
+			t.UpdatedAt = time.Now().UTC()
+		})
+}
+
+// Pause holds a running task: only downloading/processing tasks can stop.
+func (s *Store) Pause(id string) error {
+	return s.updateIf(id, func(t *Task) bool {
+		return t.Status == StatusDownloading || t.Status == StatusProcessing
+	}, func(t *Task) {
+		t.Status = StatusPaused
+		t.Stage = ""
+		t.UpdatedAt = time.Now().UTC()
+	})
 }
 
 // maxRetainedTasks caps done/failed history so queue.json stays small and fast.
@@ -317,6 +361,7 @@ func (s *Store) Counts() (map[Status]int, error) {
 		StatusProcessing:  0,
 		StatusDone:        0,
 		StatusFailed:      0,
+		StatusPaused:      0,
 	}
 	for _, t := range tasks {
 		m[t.Status]++
@@ -357,6 +402,12 @@ func (s *Store) Subscribe(fn func()) {
 func (s *Store) Close() error { return nil }
 
 func (s *Store) update(id string, fn func(*Task)) error {
+	return s.updateIf(id, func(*Task) bool { return true }, fn)
+}
+
+// updateIf applies fn to task id after checking ok; ok fails with ErrBadState,
+// a missing task with ErrNotFound. Persisted (and broadcast) only on success.
+func (s *Store) updateIf(id string, ok func(*Task) bool, fn func(*Task)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tasks, err := s.loadLocked()
@@ -365,6 +416,9 @@ func (s *Store) update(id string, fn func(*Task)) error {
 	}
 	for i := range tasks {
 		if tasks[i].ID == id {
+			if !ok(&tasks[i]) {
+				return ErrBadState
+			}
 			fn(&tasks[i])
 			return s.saveLocked(tasks)
 		}

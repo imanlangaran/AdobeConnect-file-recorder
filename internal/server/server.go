@@ -7,6 +7,7 @@ package server
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -20,16 +21,17 @@ import (
 
 // Task mirrors queue.Task.
 type Task struct {
-	ID          string    `json:"id"`
-	URL         string    `json:"url"`
-	RecordingID string    `json:"recordingID"`
-	Status      string    `json:"status"`
-	Stage       string    `json:"stage,omitempty"`
-	Attempts    int       `json:"attempts"`
-	LastError   string    `json:"lastError"`
-	ReportJSON  string    `json:"reportJSON,omitempty"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	ID           string    `json:"id"`
+	URL          string    `json:"url"`
+	RecordingID  string    `json:"recordingID"`
+	Status       string    `json:"status"`
+	SkipDownload bool      `json:"skipDownload,omitempty"` // reconstruct-only retry pending
+	Stage        string    `json:"stage,omitempty"`
+	Attempts     int       `json:"attempts"`
+	LastError    string    `json:"lastError"`
+	ReportJSON   string    `json:"reportJSON,omitempty"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 // Store is the subset of queue.Store the HTTP layer needs.
@@ -39,12 +41,23 @@ type Store interface {
 	List(limit int) []Task
 	Counts() map[string]int
 	Delete(id string) bool
+	// Retry requeues a failed/paused/done task. mode: full | reconstruct | resume.
+	Retry(id, mode string) error
+	// Stop cancels an in-flight task and pauses it; false when not running.
+	Stop(id string) bool
 }
 
 // Subscriber is an optional interface for stores supporting mutation callbacks.
 type Subscriber interface {
 	Subscribe(func())
 }
+
+// Sentinel errors Store implementations translate queue errors into, so the
+// HTTP layer maps them to statuses without importing the queue package.
+var (
+	ErrNotFound = errors.New("server: task not found")
+	ErrBadState = errors.New("server: invalid task state")
+)
 
 type hub struct {
 	mu      sync.Mutex
@@ -127,6 +140,39 @@ func New(store Store) http.Handler {
 		}
 		h.broadcast()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": id})
+	})
+	mux.HandleFunc("POST /api/tasks/{id}/retry", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		mode := r.URL.Query().Get("mode")
+		if mode == "" && strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+			var body struct {
+				Mode string `json:"mode"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mode = body.Mode
+		}
+		if mode == "" {
+			mode = "full"
+		}
+		if mode != "full" && mode != "reconstruct" && mode != "resume" {
+			writeErr(w, http.StatusBadRequest, "mode must be full, reconstruct or resume")
+			return
+		}
+		if err := store.Retry(id, mode); err != nil {
+			respondRetryErr(w, err)
+			return
+		}
+		h.broadcast()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "retried": id, "mode": mode})
+	})
+	mux.HandleFunc("POST /api/tasks/{id}/stop", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if !store.Stop(id) {
+			writeErr(w, http.StatusConflict, "task is not running")
+			return
+		}
+		h.broadcast()
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "stopped": id})
 	})
 	mux.HandleFunc("GET /api/events", func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
@@ -264,6 +310,18 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
+// respondRetryErr maps retry/stop store errors to 404/409 responses.
+func respondRetryErr(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeErr(w, http.StatusNotFound, "task not found")
+	case errors.Is(err, ErrBadState):
+		writeErr(w, http.StatusConflict, "task is not in a retryable state")
+	default: // e.g. "no cached archive ... use full retry"
+		writeErr(w, http.StatusConflict, err.Error())
+	}
+}
+
 func shortID(s string) string {
 	if len(s) > 8 {
 		return s[:8]
@@ -295,6 +353,8 @@ func badge(st string) string {
 		return "badge-error"
 	case "downloading", "processing":
 		return "badge-info"
+	case "paused":
+		return "badge-ghost"
 	default:
 		return "badge-warning"
 	}

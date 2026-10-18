@@ -83,6 +83,48 @@ func (f *fakeStore) Delete(id string) bool {
 	return true
 }
 
+func (f *fakeStore) Retry(id, mode string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.byID[id]
+	if !ok {
+		return ErrNotFound
+	}
+	switch t.Status {
+	case "failed", "paused", "done":
+	default:
+		return ErrBadState
+	}
+	t.Status = "queued"
+	t.SkipDownload = mode == "reconstruct"
+	t.LastError = ""
+	t.UpdatedAt = time.Now()
+	f.byID[id] = t
+	for i := range f.tasks {
+		if f.tasks[i].ID == id {
+			f.tasks[i] = t
+		}
+	}
+	return nil
+}
+
+func (f *fakeStore) Stop(id string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t, ok := f.byID[id]
+	if !ok || (t.Status != "downloading" && t.Status != "processing") {
+		return false
+	}
+	t.Status = "paused"
+	f.byID[id] = t
+	for i := range f.tasks {
+		if f.tasks[i].ID == id {
+			f.tasks[i] = t
+		}
+	}
+	return true
+}
+
 func TestPostValidAccepted(t *testing.T) {
 	h := New(newFake())
 	req := httptest.NewRequest(http.MethodPost, "/api/tasks",
@@ -268,5 +310,60 @@ func TestDashboardShowsStage(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "reconstructing 42%") {
 		t.Fatalf("dashboard missing stage: %s", rec.Body.String())
+	}
+}
+
+func TestRetryEndpoints(t *testing.T) {
+	st := newFake()
+	task, _, _ := st.Enqueue("https://example.adobeconnect.com/p1/", "p1")
+	h := New(st)
+	post := func(url string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, url, nil))
+		return rec
+	}
+
+	// queued task is not retryable -> 409
+	if rec := post("/api/tasks/" + task.ID + "/retry?mode=full"); rec.Code != http.StatusConflict {
+		t.Fatalf("retry queued: want 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// unknown mode -> 400
+	if rec := post("/api/tasks/" + task.ID + "/retry?mode=nope"); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad mode: want 400, got %d", rec.Code)
+	}
+	// unknown task -> 404
+	if rec := post("/api/tasks/missing/retry?mode=full"); rec.Code != http.StatusNotFound {
+		t.Fatalf("retry missing: want 404, got %d", rec.Code)
+	}
+	// failed -> queued, reconstruct-only sets skipDownload
+	st.byID[task.ID] = Task{ID: task.ID, Status: "failed"}
+	st.tasks = []Task{st.byID[task.ID]}
+	if rec := post("/api/tasks/" + task.ID + "/retry?mode=reconstruct"); rec.Code != http.StatusOK {
+		t.Fatalf("retry failed: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	got, _ := st.Get(task.ID)
+	if got.Status != "queued" || !got.SkipDownload {
+		t.Fatalf("after reconstruct retry: %+v", got)
+	}
+}
+
+func TestStopEndpoint(t *testing.T) {
+	st := newFake()
+	task, _, _ := st.Enqueue("https://example.adobeconnect.com/p1/", "p1")
+	h := New(st)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/tasks/"+task.ID+"/stop", nil))
+	if rec.Code != http.StatusConflict { // queued: nothing running
+		t.Fatalf("stop queued: want 409, got %d: %s", rec.Code, rec.Body.String())
+	}
+	st.byID[task.ID] = Task{ID: task.ID, Status: "downloading"}
+	st.tasks = []Task{st.byID[task.ID]}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/tasks/"+task.ID+"/stop", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stop active: want 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got, _ := st.Get(task.ID); got.Status != "paused" {
+		t.Fatalf("after stop: %+v", got)
 	}
 }
