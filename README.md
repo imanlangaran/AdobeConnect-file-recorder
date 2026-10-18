@@ -107,8 +107,10 @@ curl -X POST localhost:8080/api/tasks \
 ```
 
 Open `http://localhost:8080/` for the status page; `GET /api/tasks` and
-`GET /api/tasks/{id}` show queue state. `.env` keys: `PORT`, `DATA_DIR`,
-`OUT_DIR`, `MAX_WORKERS`, `AC_USERNAME`/`AC_PASSWORD`, `DEFAULT_RESOLUTION`,
+`GET /api/tasks/{id}` show queue state. `.env` keys: `PORT`, `DATA_DIR`
+(`REPOSITORY_TYPE=file|sqlite` picks the queue store; `sqlite` imports an
+existing `queue.json` on first start), `OUT_DIR`, `MAX_WORKERS`,
+`AC_USERNAME`/`AC_PASSWORD`, `DEFAULT_RESOLUTION`,
 `DEFAULT_FPS`, `DEFAULT_PRESET`, `DEFAULT_CRF`, `EXPORT_MP3`, `RETRY_COUNT`
 (env vars override the file). Docker:
 

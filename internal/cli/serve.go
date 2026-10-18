@@ -22,6 +22,7 @@ import (
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/engine"
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/recordingurl"
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/repository/filestore"
+	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/repository/sqlite"
 	"github.com/iman-langaran/AdobeConnect-file-recorder/internal/server"
 )
 
@@ -51,9 +52,9 @@ func runServe(args []string) int {
 		fmt.Fprintln(os.Stderr, "error: ffmpeg and ffprobe must be installed and on PATH")
 		return 1
 	}
-	store, err := filestore.Open(cfg.DataDir)
+	store, err := openRepository(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: open queue: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error: open %s repository: %v\n", cfg.RepositoryType, err)
 		return 1
 	}
 	defer store.Close()
@@ -102,6 +103,14 @@ func runServe(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// openRepository picks the storage backend named by REPOSITORY_TYPE.
+func openRepository(cfg config.Config) (domain.Repository, error) {
+	if cfg.RepositoryType == "sqlite" {
+		return sqlite.Open(cfg.DataDir)
+	}
+	return filestore.Open(cfg.DataDir)
 }
 
 // worker claims tasks until ctx is cancelled. Claim() already marks the task

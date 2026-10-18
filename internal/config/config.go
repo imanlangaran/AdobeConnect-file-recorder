@@ -4,6 +4,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 type Config struct {
 	Port              int
 	DataDir           string
+	RepositoryType    string // "file" (default) or "sqlite"
 	OutDir            string
 	MaxWorkers        int
 	ACUsername        string
@@ -30,6 +32,7 @@ func defaults() Config {
 	return Config{
 		Port:              8080,
 		DataDir:           "./data",
+		RepositoryType:    "file",
 		OutDir:            "./recordings",
 		MaxWorkers:        2,
 		DefaultResolution: "720p",
@@ -65,7 +68,7 @@ func Load(path string) (Config, error) {
 	// env overrides (non-empty wins). Note: USERNAME/PASSWORD are file-only
 	// fallbacks - on Windows USERNAME is always set (the login name), so
 	// honoring it here would clobber AC_USERNAME from the file.
-	for _, k := range []string{"PORT", "DATA_DIR", "OUT_DIR", "MAX_WORKERS",
+	for _, k := range []string{"PORT", "DATA_DIR", "REPOSITORY_TYPE", "OUT_DIR", "MAX_WORKERS",
 		"AC_USERNAME", "AC_PASSWORD",
 		"DEFAULT_RESOLUTION", "DEFAULT_FPS", "DEFAULT_PRESET",
 		"DEFAULT_CRF", "EXPORT_MP3", "RETRY_COUNT"} {
@@ -77,6 +80,14 @@ func Load(path string) (Config, error) {
 		if err := apply(&c, env); err != nil {
 			return c, err
 		}
+	}
+	// Fail loudly on a typo rather than silently falling back to the file store.
+	switch c.RepositoryType {
+	case "", "file":
+		c.RepositoryType = "file"
+	case "sqlite":
+	default:
+		return c, fmt.Errorf("REPOSITORY_TYPE must be \"file\" or \"sqlite\", got %q", c.RepositoryType)
 	}
 	return c, nil
 }
@@ -124,6 +135,9 @@ func apply(c *Config, vals map[string]string) error {
 	}
 	if v := str("DATA_DIR"); v != "" {
 		c.DataDir = v
+	}
+	if v := str("REPOSITORY_TYPE"); v != "" {
+		c.RepositoryType = v
 	}
 	if v := str("OUT_DIR"); v != "" {
 		c.OutDir = v

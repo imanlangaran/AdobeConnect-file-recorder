@@ -11,7 +11,8 @@ func TestDefaultsOnMissingFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load missing file: %v", err)
 	}
-	if c.Port != 8080 || c.DataDir != "./data" || c.OutDir != "./recordings" || c.MaxWorkers != 2 {
+	if c.Port != 8080 || c.DataDir != "./data" || c.RepositoryType != "file" ||
+		c.OutDir != "./recordings" || c.MaxWorkers != 2 {
 		t.Fatalf("bad defaults: %+v", c)
 	}
 	if w, h := c.ResolutionDims(); w != 1280 || h != 720 {
@@ -42,6 +43,23 @@ func TestParseSampleFile(t *testing.T) {
 	}
 	if c.ExportMP3 != false || c.RetryCount != 5 || c.DefaultFPS != 30 || c.DefaultCRF != 20 {
 		t.Fatalf("bad parse: %+v", c)
+	}
+}
+
+func TestRepositoryTypeValidation(t *testing.T) {
+	p := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(p, []byte("REPOSITORY_TYPE=sqlite\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := Load(p); err != nil || c.RepositoryType != "sqlite" {
+		t.Fatalf("sqlite: %+v err=%v", c, err)
+	}
+	// A typo must fail loudly, not silently fall back to the file store.
+	if err := os.WriteFile(p, []byte("REPOSITORY_TYPE=bogus\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("unknown REPOSITORY_TYPE must error")
 	}
 }
 

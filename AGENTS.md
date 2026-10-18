@@ -2,8 +2,9 @@
 
 ## Project
 
-`ac-rec` downloads and reconstructs Adobe Connect offline recordings. Pure Go
-(stdlib only — do not add third-party dependencies). Heavy lifting (decode,
+`ac-rec` downloads and reconstructs Adobe Connect offline recordings. Go
+stdlib, plus the single exception of `modernc.org/sqlite` (pure Go, CGO-free)
+for the optional SQLite repository — do not add other dependencies. Heavy lifting (decode,
 x264 encode, subtitle burn, audio mix) is done by `ffmpeg`, which this code
 spawns; the Go side is orchestration (XML parsing, timeline math, argv
 building). See README.md for user-facing docs and flags.
@@ -86,7 +87,8 @@ changes.
 
 ## Code standards
 
-- Go stdlib only; no new module dependencies.
+- Stdlib only, except `modernc.org/sqlite` (pure-Go, CGO-free, used by the
+  optional `REPOSITORY_TYPE=sqlite` backend). No other new module dependencies.
 - Keep `gofmt`, `go vet ./...`, and `go test ./...` green before committing.
 - Trivial/one-line changes need no test; non-trivial logic leaves one runnable
   check behind. Do not add test frameworks.

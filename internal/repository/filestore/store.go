@@ -2,9 +2,9 @@
 // mutex-guarded JSON file written atomically (temp file + rename) so a crash
 // never leaves a half-written queue behind.
 //
-// ponytail: JSON-file store holds up to ~10k tasks comfortably; migrate to
-// SQLite (modernc.org/sqlite) if the queue grows large or multi-process
-// atomic claim races start to matter.
+// This is the default backend (REPOSITORY_TYPE=file). For a large queue or
+// multi-process access, use the SQLite adapter in internal/repository/sqlite
+// (REPOSITORY_TYPE=sqlite); it migrates an existing queue.json on first open.
 package filestore
 
 import (
