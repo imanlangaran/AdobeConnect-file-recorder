@@ -28,6 +28,7 @@ import (
 // half-written queue behind. Safe for concurrent use within one process.
 type Store struct {
 	mu        sync.Mutex
+	dir       string
 	path      string
 	seq       atomic.Uint64
 	listeners []func()
@@ -42,7 +43,7 @@ func Open(dataDir string) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, err
 	}
-	s := &Store{path: filepath.Join(dataDir, "queue.json")}
+	s := &Store{dir: dataDir, path: filepath.Join(dataDir, "queue.json")}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, err := os.Stat(s.path); errors.Is(err, os.ErrNotExist) {
@@ -76,7 +77,7 @@ func (s *Store) EnqueueGrouped(url, recordingID, folderID, folderName, group str
 		return domain.Task{}, false, err
 	}
 	for _, t := range tasks {
-		if t.URL == url && (t.Status == domain.StatusQueued || t.Status == domain.StatusDownloading || t.Status == domain.StatusProcessing) {
+		if t.URL == url && (t.Status == domain.StatusQueued || t.Status == domain.StatusDownloading || t.Status == domain.StatusDownloaded || t.Status == domain.StatusProcessing) {
 			return t, true, nil
 		}
 	}
@@ -91,9 +92,9 @@ func (s *Store) EnqueueGrouped(url, recordingID, folderID, folderName, group str
 	return t, false, nil
 }
 
-// Claim picks the oldest queued task and marks it downloading.
+// ClaimDownload picks the oldest queued task and marks it downloading.
 // The second return value is false when no queued task exists.
-func (s *Store) Claim() (domain.Task, bool) {
+func (s *Store) ClaimDownload() (domain.Task, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tasks, err := s.loadLocked()
@@ -123,11 +124,42 @@ func (s *Store) Claim() (domain.Task, bool) {
 	return tasks[best], true
 }
 
+// ClaimReconstruct picks the oldest downloaded task and marks it processing.
+// The second return value is false when no downloaded task exists.
+func (s *Store) ClaimReconstruct() (domain.Task, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tasks, err := s.loadLocked()
+	if err != nil {
+		return domain.Task{}, false
+	}
+	best := -1
+	for i, t := range tasks {
+		if t.Status != domain.StatusDownloaded {
+			continue
+		}
+		if best == -1 || t.CreatedAt.Before(tasks[best].CreatedAt) ||
+			(t.CreatedAt.Equal(tasks[best].CreatedAt) && t.ID < tasks[best].ID) {
+			best = i
+		}
+	}
+	if best == -1 {
+		return domain.Task{}, false
+	}
+	tasks[best].Status = domain.StatusProcessing
+	tasks[best].Stage = ""
+	tasks[best].UpdatedAt = time.Now().UTC()
+	if err := s.saveLocked(tasks); err != nil {
+		return domain.Task{}, false
+	}
+	return tasks[best], true
+}
+
 // SetStatus moves a task to st and records lastErr.
 func (s *Store) SetStatus(id string, st domain.Status, lastErr string) error {
 	return s.update(id, func(t *domain.Task) {
 		t.Status = st
-		if st == domain.StatusFailed || st == domain.StatusQueued || st == domain.StatusPaused {
+		if st == domain.StatusFailed || st == domain.StatusQueued || st == domain.StatusDownloaded || st == domain.StatusPaused {
 			t.Stage = ""
 		}
 		t.LastError = lastErr
@@ -165,10 +197,9 @@ func (s *Store) SetDone(id, reportJSON string) error {
 	})
 }
 
-// RequeueActive moves tasks stuck in downloading/processing back to queued.
-// Call it on startup: a crash or hard kill between Claim and SetDone/SetStatus
-// otherwise leaves them invisible to workers forever. Attempts are preserved
-// so the retry budget resumes where it left off. Returns the requeued count.
+// RequeueActive moves interrupted tasks back to an actionable state on startup:
+// downloading -> queued, processing -> downloaded (if cached archive exists) or queued.
+// Tasks in downloaded remain downloaded. Attempts are preserved. Returns the requeued count.
 func (s *Store) RequeueActive() (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -183,7 +214,16 @@ func (s *Store) RequeueActive() (int, error) {
 			continue
 		}
 		was := tasks[i].Status
-		tasks[i].Status = domain.StatusQueued
+		if was == domain.StatusProcessing {
+			archive := filepath.Join(s.dir, "cache", tasks[i].ID+".zip")
+			if _, err := os.Stat(archive); err == nil {
+				tasks[i].Status = domain.StatusDownloaded
+			} else {
+				tasks[i].Status = domain.StatusQueued
+			}
+		} else {
+			tasks[i].Status = domain.StatusQueued
+		}
 		tasks[i].Stage = ""
 		if tasks[i].LastError == "" {
 			tasks[i].LastError = "requeued after restart (was " + string(was) + ")"
@@ -198,14 +238,17 @@ func (s *Store) RequeueActive() (int, error) {
 }
 
 // Retry requeues a terminal (or paused) task with a fresh attempt budget.
-// skipDownload asks for reconstruct-only: the worker reuses the cached
-// archive instead of downloading it again. Returns domain.ErrBadState when the task
-// is queued or actively running.
+// skipDownload sets StatusDownloaded (reconstruct-only); false sets StatusQueued.
+// Returns domain.ErrBadState when the task is queued or actively running.
 func (s *Store) Retry(id string, skipDownload bool) error {
 	return s.updateIf(id, func(t *domain.Task) bool {
 		return t.Status == domain.StatusFailed || t.Status == domain.StatusPaused || t.Status == domain.StatusDone
 	}, func(t *domain.Task) {
-		t.Status = domain.StatusQueued
+		if skipDownload {
+			t.Status = domain.StatusDownloaded
+		} else {
+			t.Status = domain.StatusQueued
+		}
 		t.SkipDownload = skipDownload
 		t.Attempts = 0
 		t.Stage = ""
@@ -219,7 +262,11 @@ func (s *Store) Retry(id string, skipDownload bool) error {
 func (s *Store) Resume(id string) error {
 	return s.updateIf(id, func(t *domain.Task) bool { return t.Status == domain.StatusPaused },
 		func(t *domain.Task) {
-			t.Status = domain.StatusQueued
+			if t.SkipDownload {
+				t.Status = domain.StatusDownloaded
+			} else {
+				t.Status = domain.StatusQueued
+			}
 			t.UpdatedAt = time.Now().UTC()
 		})
 }
@@ -325,6 +372,7 @@ func (s *Store) Counts() (map[domain.Status]int, error) {
 	m := map[domain.Status]int{
 		domain.StatusQueued:      0,
 		domain.StatusDownloading: 0,
+		domain.StatusDownloaded:  0,
 		domain.StatusProcessing:  0,
 		domain.StatusDone:        0,
 		domain.StatusFailed:      0,

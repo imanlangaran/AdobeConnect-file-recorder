@@ -52,6 +52,8 @@ type Store interface {
 	Retry(id, mode string) error
 	// Stop cancels an in-flight task and pauses it; false when not running.
 	Stop(id string) bool
+	// WorkerLimits returns configured download and reconstruct worker counts.
+	WorkerLimits() (download, reconstruct int)
 }
 
 // Subscriber is an optional interface for stores supporting mutation callbacks.
@@ -181,6 +183,13 @@ func New(store Store) http.Handler {
 		h.broadcast()
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "stopped": id})
 	})
+	mux.HandleFunc("GET /api/info", func(w http.ResponseWriter, r *http.Request) {
+		dl, rc := store.WorkerLimits()
+		writeJSON(w, http.StatusOK, map[string]int{
+			"maxDownloadWorkers":    dl,
+			"maxReconstructWorkers": rc,
+		})
+	})
 	mux.HandleFunc("GET /api/events", func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
@@ -248,12 +257,20 @@ func New(store Store) http.Handler {
 }
 
 type dashboard struct {
-	Counts map[string]int
-	Tasks  []Task
+	Counts                map[string]int
+	Tasks                 []Task
+	MaxDownloadWorkers    int
+	MaxReconstructWorkers int
 }
 
 func snapshot(store Store) dashboard {
-	d := dashboard{Counts: store.Counts(), Tasks: store.List(200)}
+	dl, rc := store.WorkerLimits()
+	d := dashboard{
+		Counts:                store.Counts(),
+		Tasks:                 store.List(200),
+		MaxDownloadWorkers:    dl,
+		MaxReconstructWorkers: rc,
+	}
 	if d.Counts == nil {
 		d.Counts = map[string]int{}
 	}
@@ -360,6 +377,8 @@ func badge(st string) string {
 		return "badge-error"
 	case "downloading", "processing":
 		return "badge-info"
+	case "downloaded":
+		return "badge-secondary"
 	case "paused":
 		return "badge-ghost"
 	default:

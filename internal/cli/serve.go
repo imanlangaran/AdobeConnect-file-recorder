@@ -73,17 +73,28 @@ func runServe(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	n := cfg.MaxWorkers
-	if n < 1 {
-		n = 1
+	dlWorkers := cfg.MaxDownloadWorkers
+	if dlWorkers < 1 {
+		dlWorkers = 1
+	}
+	rcWorkers := cfg.MaxReconstructWorkers
+	if rcWorkers < 1 {
+		rcWorkers = 1
 	}
 	var wg sync.WaitGroup
 	rs := newRuns()
-	for i := 0; i < n; i++ {
+	for i := 0; i < dlWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			worker(ctx, store, cfg, rs)
+			downloadWorker(ctx, store, cfg, rs)
+		}()
+	}
+	for i := 0; i < rcWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			reconstructWorker(ctx, store, cfg, rs)
 		}()
 	}
 
@@ -94,7 +105,7 @@ func runServe(args []string) int {
 		defer cancel()
 		_ = srv.Shutdown(shutCtx)
 	}()
-	fmt.Fprintf(os.Stderr, "ac-rec serve: %d workers, listening on :%d\n", n, cfg.Port)
+	fmt.Fprintf(os.Stderr, "ac-rec serve: %d download workers, %d reconstruct workers, listening on :%d\n", dlWorkers, rcWorkers, cfg.Port)
 	err = srv.ListenAndServe()
 	stop()
 	wg.Wait()
@@ -113,22 +124,52 @@ func openRepository(cfg config.Config) (domain.Repository, error) {
 	return filestore.Open(cfg.DataDir)
 }
 
-// worker claims tasks until ctx is cancelled. Claim() already marks the task
-// downloading and counts the attempt.
-func worker(ctx context.Context, store domain.Repository, cfg config.Config, rs *runs) {
-	w, h := cfg.ResolutionDims()
+// downloadWorker claims queued tasks, downloads their archives to cache, and marks them downloaded.
+func downloadWorker(ctx context.Context, store domain.Repository, cfg config.Config, rs *runs) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		task, ok := store.Claim()
+		// Backpressure guard: pause claiming downloads if downloaded backlog is high
+		// ponytail: fixed threshold 2*MaxReconstructWorkers; add MAX_DOWNLOAD_QUEUE if ops wants.
+		backlogCap := 2 * cfg.MaxReconstructWorkers
+		if backlogCap < 4 {
+			backlogCap = 4
+		}
+		counts, err := store.Counts()
+		if err == nil && counts[domain.StatusDownloaded] >= backlogCap {
+			if !sleepCtx(ctx, idlePoll) {
+				return
+			}
+			continue
+		}
+
+		task, ok := store.ClaimDownload()
 		if !ok {
 			if !sleepCtx(ctx, idlePoll) {
 				return
 			}
 			continue
 		}
-		processTask(ctx, store, cfg, task, w, h, rs)
+		processDownload(ctx, store, cfg, task, rs)
+	}
+}
+
+// reconstructWorker claims downloaded tasks, reconstructs media via ffmpeg, and marks them done.
+func reconstructWorker(ctx context.Context, store domain.Repository, cfg config.Config, rs *runs) {
+	w, h := cfg.ResolutionDims()
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		task, ok := store.ClaimReconstruct()
+		if !ok {
+			if !sleepCtx(ctx, idlePoll) {
+				return
+			}
+			continue
+		}
+		processReconstruct(ctx, store, cfg, task, w, h, rs)
 	}
 }
 
@@ -167,7 +208,7 @@ func (r *runs) remove(id string) {
 	r.mu.Unlock()
 }
 
-func processTask(ctx context.Context, store domain.Repository, cfg config.Config, task domain.Task, w, h int, rs *runs) {
+func processDownload(ctx context.Context, store domain.Repository, cfg config.Config, task domain.Task, rs *runs) {
 	var lastStageUpdate time.Time
 	var lastStageStr string
 	setStage := func(s string, force bool) {
@@ -188,15 +229,6 @@ func processTask(ctx context.Context, store domain.Repository, cfg config.Config
 		failTask(ctx, store, cfg, task, err)
 		return
 	}
-	// Output name is the recording's real title (the page <title>); the URL
-	// slug only backs it up when the page is unreachable/unauthorized.
-	title := fetchTitle(ctx, ru.PageURL(), "", nil, cfg.ACUsername, cfg.ACPassword)
-	if title == "" {
-		title = task.RecordingID
-	}
-	if title == "" {
-		title = ru.ID
-	}
 	// Heal a task born ungrouped: registration-time resolution failed
 	// transiently, and nothing ever retried it. The worker owns the task
 	// exclusively here, so re-resolving before the run is race-free.
@@ -211,10 +243,7 @@ func processTask(ctx context.Context, store domain.Repository, cfg config.Config
 			status(fmt.Sprintf("folder resolved on retry: %s", g))
 		}
 	}
-	if err := store.SetStatus(task.ID, domain.StatusProcessing, ""); err != nil {
-		status(fmt.Sprintf("set processing: %v", err))
-	}
-	setStage("starting", true)
+	setStage("downloading archive", true)
 	cache := filepath.Join(cfg.DataDir, "cache", task.ID+".zip")
 	runCtx, cancel := context.WithCancel(ctx)
 	rh := rs.add(task.ID, cancel)
@@ -223,38 +252,16 @@ func processTask(ctx context.Context, store domain.Repository, cfg config.Config
 		rs.remove(task.ID)
 	}()
 	opts := engine.Options{
-		ZipURL: ru.ZipURL(),
-		Title:  title,
-		// Parent folder resolved at registration ("", never for new tasks:
-		// unresolved ones are explicitly _unfiled).
-		Group:    task.Group,
-		OutDir:   cfg.OutDir,
-		MP3:      cfg.ExportMP3,
-		Width:    w,
-		Height:   h,
-		FPS:      cfg.DefaultFPS,
-		Preset:   cfg.DefaultPreset,
-		CRF:      cfg.DefaultCRF,
-		Username: cfg.ACUsername,
-		Password: cfg.ACPassword,
-		// Kept across attempts: a retry after a reconstruct failure skips the
-		// re-download. engine.Run only reuses it when it holds a valid archive.
+		ZipURL:    ru.ZipURL(),
 		CachePath: cache,
+		Username:  cfg.ACUsername,
+		Password:  cfg.ACPassword,
 		Status:    status,
 		Progress: func(stage string, done, total int64) {
 			setStage(formatStage(stage, done, total), false)
 		},
-		// Retries must start clean: a crash after recording.mp4 was written
-		// would otherwise fail with "output already exists".
-		Overwrite: true,
 	}
-	if task.SkipDownload {
-		// Reconstruct-only retry: point straight at the cached archive.
-		// domain.Retry validated it before requeueing; Extract fails loudly
-		// if it vanished meanwhile.
-		opts.ZipPath = cache
-	}
-	rep, err := engine.Run(runCtx, opts)
+	_, _, err = engine.DownloadArchive(runCtx, opts)
 	if err != nil {
 		if rh.stopped.Load() { // user stop: hold, don't burn the retry budget
 			if serr := store.SetStatus(task.ID, domain.StatusPaused, "stopped by user"); serr != nil {
@@ -266,17 +273,126 @@ func processTask(ctx context.Context, store domain.Repository, cfg config.Config
 		failTask(ctx, store, cfg, task, err)
 		return
 	}
+	if err := store.SetStatus(task.ID, domain.StatusDownloaded, ""); err != nil {
+		status(fmt.Sprintf("set downloaded: %v", err))
+		return
+	}
+	setStage("ready for transcode", true)
+	status("download complete")
+}
+
+func processReconstruct(ctx context.Context, store domain.Repository, cfg config.Config, task domain.Task, w, h int, rs *runs) {
+	var lastStageUpdate time.Time
+	var lastStageStr string
+	setStage := func(s string, force bool) {
+		now := time.Now()
+		if !force && s == lastStageStr && now.Sub(lastStageUpdate) < 1*time.Second {
+			return
+		}
+		lastStageUpdate = now
+		lastStageStr = s
+		_ = store.SetStage(task.ID, s)
+	}
+	status := func(s string) {
+		fmt.Fprintf(os.Stderr, "[%s] %s\n", task.ID, s)
+		setStage(s, true)
+	}
+	cache := filepath.Join(cfg.DataDir, "cache", task.ID+".zip")
+	if !engine.HasCachedArchive(cache) {
+		failReconstructTask(ctx, store, cfg, task, errors.New("cached archive missing or corrupted"), cache)
+		return
+	}
+	ru, err := recordingurl.Parse(task.URL)
+	if err != nil {
+		failReconstructTask(ctx, store, cfg, task, err, cache)
+		return
+	}
+	title := fetchTitle(ctx, ru.PageURL(), "", nil, cfg.ACUsername, cfg.ACPassword)
+	if title == "" {
+		title = task.RecordingID
+	}
+	if title == "" {
+		title = ru.ID
+	}
+	if task.Group == "" || task.Group == unfiledGroup {
+		id, name := resolveFolder(ctx, ru.PageURL(), cfg.ACUsername, cfg.ACPassword)
+		g := ensureGroup(cfg.OutDir, id, name)
+		if g != unfiledGroup {
+			task.Group = g
+			if err := store.SetGroup(task.ID, id, name, g); err != nil {
+				status(fmt.Sprintf("set group: %v", err))
+			}
+			status(fmt.Sprintf("folder resolved on retry: %s", g))
+		}
+	}
+	setStage("starting transcode", true)
+	runCtx, cancel := context.WithCancel(ctx)
+	rh := rs.add(task.ID, cancel)
+	defer func() {
+		cancel()
+		rs.remove(task.ID)
+	}()
+	opts := engine.Options{
+		Title:     title,
+		Group:     task.Group,
+		OutDir:    cfg.OutDir,
+		MP3:       cfg.ExportMP3,
+		Width:     w,
+		Height:    h,
+		FPS:       cfg.DefaultFPS,
+		Preset:    cfg.DefaultPreset,
+		CRF:       cfg.DefaultCRF,
+		CachePath: cache,
+		Status:    status,
+		Progress: func(stage string, done, total int64) {
+			setStage(formatStage(stage, done, total), false)
+		},
+		Overwrite: true,
+	}
+	rep, err := engine.ReconstructArchive(runCtx, opts, cache)
+	if err != nil {
+		if rh.stopped.Load() {
+			if serr := store.SetStatus(task.ID, domain.StatusPaused, "stopped by user"); serr != nil {
+				fmt.Fprintf(os.Stderr, "[%s] set paused: %v\n", task.ID, serr)
+			}
+			status("stopped by user")
+			return
+		}
+		failReconstructTask(ctx, store, cfg, task, err, cache)
+		return
+	}
 	raw, err := json.Marshal(rep)
 	if err != nil {
-		failTask(ctx, store, cfg, task, err)
+		failReconstructTask(ctx, store, cfg, task, err, cache)
 		return
 	}
 	if err := store.SetDone(task.ID, string(raw)); err != nil {
 		status(fmt.Sprintf("set done: %v", err))
 		return
 	}
-	_ = os.Remove(cache) // done: the archive is no longer needed for retries
+	_ = os.Remove(cache)
 	status(fmt.Sprintf("done: %s", rep.VideoPath))
+}
+
+func failReconstructTask(ctx context.Context, store domain.Repository, cfg config.Config, task domain.Task, err error, cache string) {
+	fmt.Fprintf(os.Stderr, "[%s] reconstruct failed (attempt %d): %v\n", task.ID, task.Attempts, err)
+	_ = store.SetStage(task.ID, "")
+	if ctx.Err() == nil && task.Attempts > cfg.RetryCount {
+		if serr := store.SetStatus(task.ID, domain.StatusFailed, err.Error()); serr != nil {
+			fmt.Fprintf(os.Stderr, "[%s] set failed: %v\n", task.ID, serr)
+		}
+		return
+	}
+	if ctx.Err() == nil {
+		sleepCtx(ctx, retryBackoff)
+	}
+	targetStatus := domain.StatusDownloaded
+	if !engine.HasCachedArchive(cache) {
+		targetStatus = domain.StatusQueued
+	}
+	if serr := store.SetStatus(task.ID, targetStatus, err.Error()); serr != nil {
+		fmt.Fprintf(os.Stderr, "[%s] requeue: %v\n", task.ID, serr)
+	}
 }
 
 // formatStage renders a human-friendly progress label for the dashboard.
@@ -385,6 +501,18 @@ func (a queueAdapter) Stop(id string) bool {
 	// reflects the stop immediately.
 	_ = a.q.Pause(id)
 	return true
+}
+
+func (a queueAdapter) WorkerLimits() (int, int) {
+	dl := a.cfg.MaxDownloadWorkers
+	if dl < 1 {
+		dl = 1
+	}
+	rc := a.cfg.MaxReconstructWorkers
+	if rc < 1 {
+		rc = 1
+	}
+	return dl, rc
 }
 
 func (a queueAdapter) Enqueue(url, recordingID string) (server.Task, bool, error) {

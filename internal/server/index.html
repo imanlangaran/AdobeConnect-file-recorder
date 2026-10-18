@@ -24,6 +24,7 @@
       <div class="flex items-center gap-3">
         <h1 class="text-2xl font-bold tracking-tight">ac-rec queue</h1>
         <span class="badge badge-sm badge-ghost">SSR loading...</span>
+        <span class="badge badge-sm badge-outline">Workers: {{.MaxDownloadWorkers}} dl / {{.MaxReconstructWorkers}} transcode</span>
       </div>
       <a class="link link-primary text-sm" href="/api/tasks">JSON API</a>
     </header>
@@ -58,6 +59,7 @@
   </div>
 </div>
 
+<script id="worker-limits" type="application/json">{"download":{{.MaxDownloadWorkers}},"reconstruct":{{.MaxReconstructWorkers}}}</script>
 <script>
 (function() {
   const { useState, useEffect, useMemo, useCallback } = React;
@@ -131,6 +133,7 @@
       case 'failed': return 'badge-error text-error-content';
       case 'downloading':
       case 'processing': return 'badge-info text-info-content animate-pulse';
+      case 'downloaded': return 'badge-secondary text-secondary-content';
       case 'paused': return 'badge-ghost text-base-content';
       case 'queued': return 'badge-warning text-warning-content';
       default: return 'badge-ghost';
@@ -411,6 +414,14 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
   function App() {
     const [theme, setTheme] = useState(() => localStorage.getItem('ac-theme') || 'night');
     const [tasks, setTasks] = useState([]);
+    const defaultLimits = (() => {
+      try {
+        const el = document.getElementById('worker-limits');
+        if (el) return JSON.parse(el.textContent);
+      } catch (e) {}
+      return { download: 3, reconstruct: 1 };
+    })();
+    const [workerLimits, setWorkerLimits] = useState(defaultLimits);
     const [filter, setFilter] = useState('all');
     const [search, setSearch] = useState('');
     const [sortField, setSortField] = useState('created');
@@ -446,6 +457,20 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
       }
     }, []);
 
+    const loadInfo = useCallback(async () => {
+      try {
+        const res = await fetch('/api/info');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.maxDownloadWorkers && data.maxReconstructWorkers) {
+          setWorkerLimits({
+            download: data.maxDownloadWorkers,
+            reconstruct: data.maxReconstructWorkers,
+          });
+        }
+      } catch (e) {}
+    }, []);
+
     useEffect(() => {
       let es = null;
       let reconnectTimer = null;
@@ -465,17 +490,20 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
       }
       connect();
       loadTasks();
+      loadInfo();
       return () => {
         if (es) es.close();
         if (reconnectTimer) clearTimeout(reconnectTimer);
       };
-    }, [loadTasks]);
+    }, [loadTasks, loadInfo]);
 
     const counts = useMemo(() => {
-      const c = { queued: 0, active: 0, done: 0, failed: 0, paused: 0, total: tasks.length };
+      const c = { queued: 0, downloading: 0, downloaded: 0, processing: 0, active: 0, done: 0, failed: 0, paused: 0, total: tasks.length };
       tasks.forEach(t => {
         if (t.status === 'queued') c.queued++;
-        else if (t.status === 'downloading' || t.status === 'processing') c.active++;
+        else if (t.status === 'downloading') { c.downloading++; c.active++; }
+        else if (t.status === 'downloaded') c.downloaded++;
+        else if (t.status === 'processing') { c.processing++; c.active++; }
         else if (t.status === 'done') c.done++;
         else if (t.status === 'failed') c.failed++;
         else if (t.status === 'paused') c.paused++;
@@ -565,6 +593,9 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
     const filteredTasks = useMemo(() => {
       return tasks.filter(t => {
         if (filter === 'queued' && t.status !== 'queued') return false;
+        if (filter === 'downloading' && t.status !== 'downloading') return false;
+        if (filter === 'downloaded' && t.status !== 'downloaded') return false;
+        if (filter === 'processing' && t.status !== 'processing') return false;
         if (filter === 'active' && t.status !== 'downloading' && t.status !== 'processing') return false;
         if (filter === 'done' && t.status !== 'done') return false;
         if (filter === 'failed' && t.status !== 'failed') return false;
@@ -601,10 +632,11 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
       tasks.forEach(t => {
         const k = gkey(t);
         let a = allBy.get(k);
-        if (!a) { a = { total: 0, done: 0, active: 0, failed: 0, paused: 0, queued: 0 }; allBy.set(k, a); }
+        if (!a) { a = { total: 0, done: 0, active: 0, downloaded: 0, failed: 0, paused: 0, queued: 0 }; allBy.set(k, a); }
         a.total++;
         if (t.status === 'done') a.done++;
         else if (t.status === 'downloading' || t.status === 'processing') a.active++;
+        else if (t.status === 'downloaded') a.downloaded++;
         else if (t.status === 'failed') a.failed++;
         else if (t.status === 'paused') a.paused++;
         else if (t.status === 'queued') a.queued++;
@@ -652,7 +684,7 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
       <div className="mx-auto max-w-6xl px-4 py-6">
         <!-- Header -->
         <header className="mb-6 flex flex-wrap items-center justify-between gap-4 border-b border-base-300 pb-4">
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-2xl font-bold tracking-tight">ac-rec queue</h1>
             ${connState === 'connected' && html`
               <span className="badge badge-sm badge-success gap-1 text-xs">
@@ -671,6 +703,18 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
                 Offline
               </span>
             `}
+
+            <!-- Worker Utilization Badges -->
+            <div className="flex items-center gap-1.5 ml-2">
+              <span className="badge badge-sm badge-outline gap-1 font-mono text-xs" title="Download workers: active / configured max">
+                <span>📥</span>
+                <span>${counts.downloading || 0}/${workerLimits.download} dl</span>
+              </span>
+              <span className="badge badge-sm badge-outline gap-1 font-mono text-xs" title="Reconstruct workers: active / configured max">
+                <span>🎬</span>
+                <span>${counts.processing || 0}/${workerLimits.reconstruct} transcode</span>
+              </span>
+            </div>
           </div>
 
           <div className="flex items-center gap-3">
@@ -719,41 +763,48 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
         </section>
 
         <!-- Stats Bar (Clickable) -->
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-5 mb-4">
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-6 mb-4">
           <div
             onClick=${() => setFilter(filter === 'queued' ? 'all' : 'queued')}
-            className=${`stat rounded-box bg-base-200 px-4 py-3 shadow-sm border cursor-pointer transition-all hover:bg-base-300 ${filter === 'queued' ? 'border-warning ring-1 ring-warning' : 'border-base-300'}`}
+            className=${`stat rounded-box bg-base-200 px-3 py-2 shadow-sm border cursor-pointer transition-all hover:bg-base-300 ${filter === 'queued' ? 'border-warning ring-1 ring-warning' : 'border-base-300'}`}
           >
             <div className="stat-title text-xs">Queued</div>
-            <div className="stat-value text-2xl text-warning">${counts.queued}</div>
+            <div className="stat-value text-xl text-warning">${counts.queued}</div>
           </div>
           <div
-            onClick=${() => setFilter(filter === 'active' ? 'all' : 'active')}
-            className=${`stat rounded-box bg-base-200 px-4 py-3 shadow-sm border cursor-pointer transition-all hover:bg-base-300 ${filter === 'active' ? 'border-info ring-1 ring-info' : 'border-base-300'}`}
+            onClick=${() => setFilter(filter === 'downloading' ? 'all' : 'downloading')}
+            className=${`stat rounded-box bg-base-200 px-3 py-2 shadow-sm border cursor-pointer transition-all hover:bg-base-300 ${filter === 'downloading' ? 'border-info ring-1 ring-info' : 'border-base-300'}`}
           >
-            <div className="stat-title text-xs">Active</div>
-            <div className="stat-value text-2xl text-info">${counts.active}</div>
+            <div className="stat-title text-xs">Downloading</div>
+            <div className="stat-value text-xl text-info">${counts.downloading}</div>
+          </div>
+          <div
+            onClick=${() => setFilter(filter === 'downloaded' ? 'all' : 'downloaded')}
+            className=${`stat rounded-box bg-base-200 px-3 py-2 shadow-sm border cursor-pointer transition-all hover:bg-base-300 ${filter === 'downloaded' ? 'border-secondary ring-1 ring-secondary' : 'border-base-300'}`}
+          >
+            <div className="stat-title text-xs">Downloaded</div>
+            <div className="stat-value text-xl text-secondary">${counts.downloaded}</div>
+          </div>
+          <div
+            onClick=${() => setFilter(filter === 'processing' ? 'all' : 'processing')}
+            className=${`stat rounded-box bg-base-200 px-3 py-2 shadow-sm border cursor-pointer transition-all hover:bg-base-300 ${filter === 'processing' ? 'border-info ring-1 ring-info' : 'border-base-300'}`}
+          >
+            <div className="stat-title text-xs">Transcoding</div>
+            <div className="stat-value text-xl text-info">${counts.processing}</div>
           </div>
           <div
             onClick=${() => setFilter(filter === 'done' ? 'all' : 'done')}
-            className=${`stat rounded-box bg-base-200 px-4 py-3 shadow-sm border cursor-pointer transition-all hover:bg-base-300 ${filter === 'done' ? 'border-success ring-1 ring-success' : 'border-base-300'}`}
+            className=${`stat rounded-box bg-base-200 px-3 py-2 shadow-sm border cursor-pointer transition-all hover:bg-base-300 ${filter === 'done' ? 'border-success ring-1 ring-success' : 'border-base-300'}`}
           >
             <div className="stat-title text-xs">Done</div>
-            <div className="stat-value text-2xl text-success">${counts.done}</div>
+            <div className="stat-value text-xl text-success">${counts.done}</div>
           </div>
           <div
             onClick=${() => setFilter(filter === 'failed' ? 'all' : 'failed')}
-            className=${`stat rounded-box bg-base-200 px-4 py-3 shadow-sm border cursor-pointer transition-all hover:bg-base-300 ${filter === 'failed' ? 'border-error ring-1 ring-error' : 'border-base-300'}`}
+            className=${`stat rounded-box bg-base-200 px-3 py-2 shadow-sm border cursor-pointer transition-all hover:bg-base-300 ${filter === 'failed' ? 'border-error ring-1 ring-error' : 'border-base-300'}`}
           >
             <div className="stat-title text-xs">Failed</div>
-            <div className="stat-value text-2xl text-error">${counts.failed}</div>
-          </div>
-          <div
-            onClick=${() => setFilter('all')}
-            className=${`stat rounded-box bg-base-200 px-4 py-3 shadow-sm border cursor-pointer transition-all hover:bg-base-300 ${filter === 'all' ? 'border-primary ring-1 ring-primary' : 'border-base-300'}`}
-          >
-            <div className="stat-title text-xs">Total</div>
-            <div className="stat-value text-2xl">${counts.total}</div>
+            <div className="stat-value text-xl text-error">${counts.failed}</div>
           </div>
         </div>
 
@@ -764,9 +815,10 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
           </summary>
           <div className="space-y-2 px-4 pb-4 text-xs opacity-90">
             <ol className="list-inside list-decimal space-y-1">
-              <li><span className=${'badge badge-sm ' + statusBadgeClass('queued')}>queued</span> — waiting for a free worker; the oldest task is picked first.</li>
-              <li><span className=${'badge badge-sm ' + statusBadgeClass('downloading')}>downloading</span> — fetching the recording archive (ZIP). It is validated and cached, so a later retry does not re-download it.</li>
-              <li><span className=${'badge badge-sm ' + statusBadgeClass('processing')}>processing</span> — extracting the archive, reconstructing the video with ffmpeg, checking its duration, then writing sidecars (chat log, attendees, report).</li>
+              <li><span className=${'badge badge-sm ' + statusBadgeClass('queued')}>queued</span> — waiting for a free download worker; the oldest task is picked first.</li>
+              <li><span className=${'badge badge-sm ' + statusBadgeClass('downloading')}>downloading</span> — fetching the recording archive (ZIP) from Adobe Connect.</li>
+              <li><span className=${'badge badge-sm ' + statusBadgeClass('downloaded')}>downloaded</span> — archive verified and cached on disk; waiting for a transcode worker.</li>
+              <li><span className=${'badge badge-sm ' + statusBadgeClass('processing')}>processing</span> — extracting the archive, reconstructing the video with ffmpeg, checking its duration, then writing sidecars.</li>
               <li><span className=${'badge badge-sm ' + statusBadgeClass('done')}>done</span> — <span className="font-mono">recording.mp4</span> and sidecars are in the output folder; the cached archive is deleted.</li>
             </ol>
             <p>
@@ -788,8 +840,10 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
         <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
           <div className="flex flex-wrap gap-1.5">
             <button className=${`btn btn-xs ${filter === 'all' ? 'btn-neutral' : 'btn-ghost'}`} onClick=${() => setFilter('all')}>All (${counts.total})</button>
-            <button className=${`btn btn-xs ${filter === 'active' ? 'btn-info' : 'btn-ghost'}`} onClick=${() => setFilter('active')}>Active (${counts.active})</button>
             <button className=${`btn btn-xs ${filter === 'queued' ? 'btn-warning' : 'btn-ghost'}`} onClick=${() => setFilter('queued')}>Queued (${counts.queued})</button>
+            <button className=${`btn btn-xs ${filter === 'downloading' ? 'btn-info' : 'btn-ghost'}`} onClick=${() => setFilter('downloading')}>Downloading (${counts.downloading})</button>
+            <button className=${`btn btn-xs ${filter === 'downloaded' ? 'btn-secondary' : 'btn-ghost'}`} onClick=${() => setFilter('downloaded')}>Downloaded (${counts.downloaded})</button>
+            <button className=${`btn btn-xs ${filter === 'processing' ? 'btn-info' : 'btn-ghost'}`} onClick=${() => setFilter('processing')}>Transcoding (${counts.processing})</button>
             <button className=${`btn btn-xs ${filter === 'done' ? 'btn-success' : 'btn-ghost'}`} onClick=${() => setFilter('done')}>Done (${counts.done})</button>
             <button className=${`btn btn-xs ${filter === 'failed' ? 'btn-error' : 'btn-ghost'}`} onClick=${() => setFilter('failed')}>Failed (${counts.failed})</button>
             <button className=${`btn btn-xs ${filter === 'paused' ? 'btn-ghost border-base-content' : 'btn-ghost'}`} onClick=${() => setFilter('paused')}>Paused (${counts.paused})</button>
@@ -844,6 +898,7 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
                           <span>${g.label}</span>
                           ${g.done > 0 && html`<span className="badge badge-xs badge-success font-normal">✓ ${g.done}</span>`}
                           ${g.active > 0 && html`<span className="badge badge-xs badge-info font-normal">⏳ ${g.active}</span>`}
+                          ${g.downloaded > 0 && html`<span className="badge badge-xs badge-secondary font-normal">📦 ${g.downloaded}</span>`}
                           ${g.failed > 0 && html`<span className="badge badge-xs badge-error font-normal">✗ ${g.failed}</span>`}
                           ${g.paused > 0 && html`<span className="badge badge-xs badge-ghost font-normal">⏸ ${g.paused}</span>`}
                           ${g.queued > 0 && html`<span className="badge badge-xs badge-warning font-normal">⏳ ${g.queued}</span>`}

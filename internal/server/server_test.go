@@ -125,6 +125,10 @@ func (f *fakeStore) Stop(id string) bool {
 	return true
 }
 
+func (f *fakeStore) WorkerLimits() (int, int) {
+	return 3, 1
+}
+
 func TestPostValidAccepted(t *testing.T) {
 	h := New(newFake())
 	req := httptest.NewRequest(http.MethodPost, "/api/tasks",
@@ -397,5 +401,28 @@ func TestStopEndpoint(t *testing.T) {
 	}
 	if got, _ := st.Get(task.ID); got.Status != "paused" {
 		t.Fatalf("after stop: %+v", got)
+	}
+}
+
+func TestGetInfo(t *testing.T) {
+	st := newFake()
+	h := New(st)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/info", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/info: want 200, got %d", rec.Code)
+	}
+	var info map[string]int
+	if err := json.Unmarshal(rec.Body.Bytes(), &info); err != nil {
+		t.Fatalf("decode /api/info: %v", err)
+	}
+	if info["maxDownloadWorkers"] != 3 || info["maxReconstructWorkers"] != 1 {
+		t.Fatalf("bad info: %+v", info)
+	}
+}
+
+func TestBadge(t *testing.T) {
+	if badge("downloaded") != "badge-secondary" {
+		t.Fatalf("badge(downloaded) = %q, want badge-secondary", badge("downloaded"))
 	}
 }

@@ -3,6 +3,8 @@ package filestore
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -40,12 +42,20 @@ func TestEnqueueDedupeClaimSetDoneList(t *testing.T) {
 		t.Fatalf("Enqueue b: %v", err)
 	}
 
-	claimed, ok := s.Claim()
+	claimed, ok := s.ClaimDownload()
 	if !ok {
-		t.Fatal("Claim: nothing claimed")
+		t.Fatal("ClaimDownload: nothing claimed")
 	}
 	if claimed.ID != a.ID || claimed.Status != domain.StatusDownloading {
 		t.Fatalf("claimed wrong task: %+v", claimed)
+	}
+
+	if err := s.SetStatus(a.ID, domain.StatusDownloaded, ""); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, ok := s.ClaimReconstruct()
+	if !ok || reclaimed.ID != a.ID || reclaimed.Status != domain.StatusProcessing {
+		t.Fatalf("ClaimReconstruct: %+v %v", reclaimed, ok)
 	}
 
 	if err := s.SetStatus(b.ID, domain.StatusProcessing, ""); err != nil {
@@ -89,8 +99,11 @@ func TestEnqueueDedupeClaimSetDoneList(t *testing.T) {
 	if err := s.SetStatus(b.ID, domain.StatusFailed, "boom"); err != nil {
 		t.Fatalf("SetStatus failed: %v", err)
 	}
-	if _, ok := s.Claim(); ok {
-		t.Fatal("Claim after all non-queued: got task")
+	if _, ok := s.ClaimDownload(); ok {
+		t.Fatal("ClaimDownload after all non-queued: got task")
+	}
+	if _, ok := s.ClaimReconstruct(); ok {
+		t.Fatal("ClaimReconstruct after all non-downloaded: got task")
 	}
 	c, _, err := s.Enqueue("https://example.test/r2", "r2")
 	if err != nil {
@@ -102,7 +115,8 @@ func TestEnqueueDedupeClaimSetDoneList(t *testing.T) {
 }
 
 func TestRequeueActive(t *testing.T) {
-	s, err := Open(t.TempDir())
+	dir := t.TempDir()
+	s, err := Open(dir)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -113,29 +127,63 @@ func TestRequeueActive(t *testing.T) {
 	}
 	a, _, _ := s.Enqueue("https://example.test/r1", "r1")
 	b, _, _ := s.Enqueue("https://example.test/r2", "r2")
-	claimed, ok := s.Claim() // a -> downloading, attempt 1
+	c, _, _ := s.Enqueue("https://example.test/r3", "r3")
+	d, _, _ := s.Enqueue("https://example.test/r4", "r4")
+
+	claimed, ok := s.ClaimDownload() // a -> downloading, attempt 1
 	if !ok || claimed.ID != a.ID {
-		t.Fatalf("Claim: %+v %v", claimed, ok)
+		t.Fatalf("ClaimDownload: %+v %v", claimed, ok)
 	}
-	if err := s.SetStatus(b.ID, domain.StatusProcessing, ""); err != nil {
+
+	// b: downloaded -> processing with cached zip file
+	if err := s.SetStatus(b.ID, domain.StatusDownloaded, ""); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := s.RequeueActive(); err != nil || n != 2 {
-		t.Fatalf("RequeueActive = %d, %v; want 2", n, err)
+	if claimedB, ok := s.ClaimReconstruct(); !ok || claimedB.ID != b.ID {
+		t.Fatalf("ClaimReconstruct b: %+v %v", claimedB, ok)
 	}
-	for _, id := range []string{a.ID, b.ID} {
-		got, err := s.Get(id)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got.Status != domain.StatusQueued {
-			t.Fatalf("task %s status = %s, want queued", id, got.Status)
-		}
-		if got.LastError == "" {
-			t.Fatalf("task %s lost the restart note", id)
-		}
+	if err := os.MkdirAll(filepath.Join(dir, "cache"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	reclaimed, ok := s.Claim()
+	if err := os.WriteFile(filepath.Join(dir, "cache", b.ID+".zip"), []byte("archive"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// c: downloaded -> processing without cached zip file
+	if err := s.SetStatus(c.ID, domain.StatusDownloaded, ""); err != nil {
+		t.Fatal(err)
+	}
+	if claimedC, ok := s.ClaimReconstruct(); !ok || claimedC.ID != c.ID {
+		t.Fatalf("ClaimReconstruct c: %+v %v", claimedC, ok)
+	}
+
+	// d: downloaded, idle -> must remain downloaded
+	if err := s.SetStatus(d.ID, domain.StatusDownloaded, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if n, err := s.RequeueActive(); err != nil || n != 3 {
+		t.Fatalf("RequeueActive = %d, %v; want 3", n, err)
+	}
+
+	gotA, _ := s.Get(a.ID)
+	if gotA.Status != domain.StatusQueued || gotA.LastError == "" {
+		t.Fatalf("task a = %+v, want queued with restart note", gotA)
+	}
+	gotB, _ := s.Get(b.ID)
+	if gotB.Status != domain.StatusDownloaded || gotB.LastError == "" {
+		t.Fatalf("task b = %+v, want downloaded with restart note", gotB)
+	}
+	gotC, _ := s.Get(c.ID)
+	if gotC.Status != domain.StatusQueued || gotC.LastError == "" {
+		t.Fatalf("task c = %+v, want queued with restart note", gotC)
+	}
+	gotD, _ := s.Get(d.ID)
+	if gotD.Status != domain.StatusDownloaded {
+		t.Fatalf("task d = %+v, want downloaded unchanged", gotD)
+	}
+
+	reclaimed, ok := s.ClaimDownload()
 	if !ok || reclaimed.ID != a.ID || reclaimed.Attempts != 2 {
 		t.Fatalf("re-claim: %+v %v (attempts must resume, not reset)", reclaimed, ok)
 	}
@@ -253,7 +301,7 @@ func TestRetryResumePause(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claimed, ok := s.Claim()
+	claimed, ok := s.ClaimDownload()
 	if !ok || claimed.Attempts != 1 {
 		t.Fatalf("claim: %+v, want attempts=1", claimed)
 	}
@@ -268,8 +316,8 @@ func TestRetryResumePause(t *testing.T) {
 	if err := s.Pause(task.ID); !errors.Is(err, domain.ErrBadState) {
 		t.Fatalf("Pause queued must be domain.ErrBadState, got %v", err)
 	}
-	if _, ok := s.Claim(); !ok { // re-claim for the pause path
-		t.Fatal("Claim: nothing to claim")
+	if _, ok := s.ClaimDownload(); !ok { // re-claim for the pause path
+		t.Fatal("ClaimDownload: nothing to claim")
 	}
 	if err := s.Pause(task.ID); err != nil {
 		t.Fatalf("Pause running: %v", err)
@@ -278,8 +326,8 @@ func TestRetryResumePause(t *testing.T) {
 	if got.Status != domain.StatusPaused || got.Stage != "" {
 		t.Fatalf("after Pause: %+v", got)
 	}
-	if _, ok := s.Claim(); ok {
-		t.Fatal("Claim must skip paused tasks")
+	if _, ok := s.ClaimDownload(); ok {
+		t.Fatal("ClaimDownload must skip paused tasks")
 	}
 
 	// Resume: only from paused, attempts preserved.
@@ -305,14 +353,24 @@ func TestRetryResumePause(t *testing.T) {
 		t.Fatalf("Retry failed task: %v", err)
 	}
 	got, _ = s.Get(task.ID)
-	if got.Status != domain.StatusQueued || got.Attempts != 0 || !got.SkipDownload ||
+	if got.Status != domain.StatusDownloaded || got.Attempts != 0 || !got.SkipDownload ||
 		got.LastError != "" || got.Stage != "" {
 		t.Fatalf("after reconstruct Retry: %+v", got)
 	}
+	if err := s.SetStatus(task.ID, domain.StatusFailed, "boom"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Retry(task.ID, false); err != nil {
+		t.Fatalf("Retry full task: %v", err)
+	}
+	got, _ = s.Get(task.ID)
+	if got.Status != domain.StatusQueued || got.Attempts != 0 || got.SkipDownload {
+		t.Fatalf("after full Retry: %+v", got)
+	}
 
 	// Counts includes paused.
-	if _, ok := s.Claim(); !ok {
-		t.Fatal("Claim: nothing to claim")
+	if _, ok := s.ClaimDownload(); !ok {
+		t.Fatal("ClaimDownload: nothing to claim")
 	}
 	if err := s.Pause(task.ID); err != nil {
 		t.Fatalf("Pause: %v", err)

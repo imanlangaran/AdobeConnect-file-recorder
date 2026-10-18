@@ -68,64 +68,108 @@ var ErrUnsupported = errors.New("unsupported recording")
 
 const toleranceMs = 10_000 // duration validation window (10s)
 
-// Run executes the pipeline for one recording.
-func Run(ctx context.Context, opt Options) (Report, error) {
+// DownloadArchive obtains the archive for opt: reuses opt.ZipPath or opt.CachePath
+// if cached, otherwise downloads opt.ZipURL and returns the archive path and size.
+func DownloadArchive(ctx context.Context, opt Options) (string, int64, error) {
+	status := opt.Status
+	if status == nil {
+		status = func(string) {}
+	}
+
+	if opt.ZipPath != "" {
+		st, err := os.Stat(opt.ZipPath)
+		if err != nil {
+			return "", 0, err
+		}
+		if st.IsDir() {
+			return "", 0, fmt.Errorf("archive path is a directory: %s", opt.ZipPath)
+		}
+		return opt.ZipPath, st.Size(), nil
+	}
+
+	if opt.CachePath != "" && HasCachedArchive(opt.CachePath) {
+		status("using cached archive")
+		st, err := os.Stat(opt.CachePath)
+		if err != nil {
+			return "", 0, err
+		}
+		return opt.CachePath, st.Size(), nil
+	}
+
+	var zipPath string
+	var cleanupDir string
+	if opt.CachePath != "" {
+		if err := os.MkdirAll(filepath.Dir(opt.CachePath), 0o755); err != nil {
+			return "", 0, err
+		}
+		zipPath = opt.CachePath
+	} else {
+		tmpDir, err := os.MkdirTemp("", "acrec-*")
+		if err != nil {
+			return "", 0, err
+		}
+		cleanupDir = tmpDir
+		zipPath = filepath.Join(tmpDir, "recording.zip")
+	}
+
+	cookies := opt.Cookies
+	if opt.Username != "" {
+		status("logging in")
+		cs, err := download.Login(ctx, &http.Client{}, originOf(opt.ZipURL), opt.Username, opt.Password)
+		if err != nil {
+			if cleanupDir != "" {
+				_ = os.RemoveAll(cleanupDir)
+			}
+			return "", 0, err
+		}
+		cookies = append(cookies, cs...)
+	}
+
+	status("downloading archive")
+	if err := download.File(ctx, &http.Client{}, opt.ZipURL, zipPath,
+		download.Options{
+			Session:  opt.Session,
+			Cookies:  cookies,
+			Referer:  refererOf(opt.ZipURL),
+			Validate: download.ValidateZIP,
+			Progress: func(d, t int64) {
+				if opt.Progress != nil {
+					opt.Progress("download", d, t)
+				}
+			},
+		}); err != nil {
+		if cleanupDir != "" {
+			_ = os.RemoveAll(cleanupDir)
+		}
+		return "", 0, err
+	}
+
+	st, err := os.Stat(zipPath)
+	if err != nil {
+		if cleanupDir != "" {
+			_ = os.RemoveAll(cleanupDir)
+		}
+		return "", 0, err
+	}
+	return zipPath, st.Size(), nil
+}
+
+// ReconstructArchive unpacks the archive at zipPath, reconstructs media and writes sidecars.
+func ReconstructArchive(ctx context.Context, opt Options, zipPath string) (Report, error) {
 	var rep Report
 	status := opt.Status
 	if status == nil {
 		status = func(string) {}
 	}
 
-	work, err := os.MkdirTemp("", "acrec-*")
+	st, err := os.Stat(zipPath)
 	if err != nil {
 		return rep, err
 	}
-	defer os.RemoveAll(work)
-
-	zipPath := opt.ZipPath
-	if zipPath == "" {
-		zipPath = filepath.Join(work, "recording.zip")
-		if opt.CachePath != "" {
-			if err := os.MkdirAll(filepath.Dir(opt.CachePath), 0o755); err != nil {
-				return rep, err
-			}
-		}
-		if HasCachedArchive(opt.CachePath) {
-			status("using cached archive") // retry after a reconstruct failure: don't re-download
-			zipPath = opt.CachePath
-		} else {
-			cookies := opt.Cookies
-			if opt.Username != "" {
-				status("logging in")
-				cs, err := download.Login(ctx, &http.Client{}, originOf(opt.ZipURL), opt.Username, opt.Password)
-				if err != nil {
-					return rep, err
-				}
-				cookies = append(cookies, cs...)
-			}
-			status("downloading archive")
-			if opt.CachePath != "" {
-				zipPath = opt.CachePath
-			}
-			if err := download.File(ctx, &http.Client{}, opt.ZipURL, zipPath,
-				download.Options{
-					Session:  opt.Session,
-					Cookies:  cookies,
-					Referer:  refererOf(opt.ZipURL),
-					Validate: download.ValidateZIP,
-					Progress: func(d, t int64) {
-						if opt.Progress != nil {
-							opt.Progress("download", d, t)
-						}
-					},
-				}); err != nil {
-				return rep, err
-			}
-		}
+	if st.IsDir() {
+		return rep, fmt.Errorf("archive path is a directory: %s", zipPath)
 	}
-	if st, err := os.Stat(zipPath); err == nil {
-		rep.ArchiveBytes = st.Size()
-	}
+	rep.ArchiveBytes = st.Size()
 
 	title := opt.Title
 	if title == "" {
@@ -146,6 +190,12 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 		return rep, err
 	}
 	rep.OutDir = outDir
+
+	work, err := os.MkdirTemp("", "acrec-*")
+	if err != nil {
+		return rep, err
+	}
+	defer os.RemoveAll(work)
 
 	status("extracting archive")
 	rawDir := filepath.Join(work, "raw")
@@ -266,6 +316,18 @@ func Run(ctx context.Context, opt Options) (Report, error) {
 	}
 	status(fmt.Sprintf("done: %s (%s)", outVideo, ms(rep.DurationMs)))
 	return rep, nil
+}
+
+// Run executes the pipeline for one recording.
+func Run(ctx context.Context, opt Options) (Report, error) {
+	zipPath, _, err := DownloadArchive(ctx, opt)
+	if err != nil {
+		return Report{}, err
+	}
+	if opt.ZipPath == "" && opt.CachePath == "" {
+		defer os.RemoveAll(filepath.Dir(zipPath))
+	}
+	return ReconstructArchive(ctx, opt, zipPath)
 }
 
 func parseChat(rawDir string) []assets.ChatMessage {

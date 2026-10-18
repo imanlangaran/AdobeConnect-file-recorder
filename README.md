@@ -98,7 +98,7 @@ Add when: a recording actually needs it.
 page and a tiny JSON API:
 
 ```sh
-cp .env.example .env   # set AC_USERNAME/AC_PASSWORD, PORT, MAX_WORKERS, …
+cp .env.example .env   # set AC_USERNAME/AC_PASSWORD, PORT, MAX_DOWNLOAD_WORKERS, MAX_RECONSTRUCT_WORKERS, …
 bin/ac-rec serve [--env .env]
 
 curl -X POST localhost:8080/api/tasks \
@@ -109,8 +109,8 @@ curl -X POST localhost:8080/api/tasks \
 Open `http://localhost:8080/` for the status page; `GET /api/tasks` and
 `GET /api/tasks/{id}` show queue state. `.env` keys: `PORT`, `DATA_DIR`
 (`REPOSITORY_TYPE=file|sqlite` picks the queue store; `sqlite` imports an
-existing `queue.json` on first start), `OUT_DIR`, `MAX_WORKERS`,
-`AC_USERNAME`/`AC_PASSWORD`, `DEFAULT_RESOLUTION`,
+existing `queue.json` on first start), `OUT_DIR`, `MAX_DOWNLOAD_WORKERS`,
+`MAX_RECONSTRUCT_WORKERS`, `AC_USERNAME`/`AC_PASSWORD`, `DEFAULT_RESOLUTION`,
 `DEFAULT_FPS`, `DEFAULT_PRESET`, `DEFAULT_CRF`, `EXPORT_MP3`, `RETRY_COUNT`
 (env vars override the file). Docker:
 

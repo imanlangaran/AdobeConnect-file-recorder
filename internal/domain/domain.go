@@ -16,6 +16,7 @@ type Status string
 const (
 	StatusQueued      Status = "queued"
 	StatusDownloading Status = "downloading"
+	StatusDownloaded  Status = "downloaded"
 	StatusProcessing  Status = "processing"
 	StatusDone        Status = "done"
 	StatusFailed      Status = "failed"
@@ -61,8 +62,10 @@ type Repository interface {
 	Enqueue(url, recordingID string) (t Task, existed bool, err error)
 	// EnqueueGrouped is Enqueue with the parent folder already resolved.
 	EnqueueGrouped(url, recordingID, folderID, folderName, group string) (t Task, existed bool, err error)
-	// Claim picks the oldest queued task and marks it downloading.
-	Claim() (t Task, ok bool)
+	// ClaimDownload picks the oldest queued task and marks it downloading.
+	ClaimDownload() (t Task, ok bool)
+	// ClaimReconstruct picks the oldest downloaded task and marks it processing.
+	ClaimReconstruct() (t Task, ok bool)
 	SetStatus(id string, st Status, lastErr string) error
 	SetStage(id, stage string) error
 	SetGroup(id, folderID, folderName, group string) error

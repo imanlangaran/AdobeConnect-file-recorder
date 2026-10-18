@@ -28,6 +28,7 @@ import (
 // Store is a mutex-guarded SQLite task store.
 type Store struct {
 	mu        sync.Mutex
+	dir       string
 	db        *sql.DB
 	seq       atomic.Uint64
 	listeners []func()
@@ -73,7 +74,7 @@ func Open(dataDir string) (*Store, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db}
+	s := &Store{dir: dataDir, db: db}
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, err
@@ -168,8 +169,8 @@ func (s *Store) EnqueueGrouped(url, recordingID, folderID, folderName, group str
 		return domain.Task{}, false, err
 	}
 	defer tx.Rollback()
-	row := tx.QueryRow(`SELECT `+cols+` FROM tasks WHERE url=? AND status IN (?,?,?) LIMIT 1`,
-		url, domain.StatusQueued, domain.StatusDownloading, domain.StatusProcessing)
+	row := tx.QueryRow(`SELECT `+cols+` FROM tasks WHERE url=? AND status IN (?,?,?,?) LIMIT 1`,
+		url, domain.StatusQueued, domain.StatusDownloading, domain.StatusDownloaded, domain.StatusProcessing)
 	if t, err := scanTask(row); err == nil {
 		return t, true, nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
@@ -189,8 +190,8 @@ func (s *Store) EnqueueGrouped(url, recordingID, folderID, folderName, group str
 	return t, false, nil
 }
 
-// Claim picks the oldest queued task and marks it downloading.
-func (s *Store) Claim() (domain.Task, bool) {
+// ClaimDownload picks the oldest queued task and marks it downloading.
+func (s *Store) ClaimDownload() (domain.Task, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
@@ -219,11 +220,40 @@ func (s *Store) Claim() (domain.Task, bool) {
 	return t, true
 }
 
+// ClaimReconstruct picks the oldest downloaded task and marks it processing.
+func (s *Store) ClaimReconstruct() (domain.Task, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return domain.Task{}, false
+	}
+	defer tx.Rollback()
+	row := tx.QueryRow(`SELECT `+cols+` FROM tasks WHERE status=? ORDER BY created_at ASC, id ASC LIMIT 1`,
+		domain.StatusDownloaded)
+	t, err := scanTask(row)
+	if err != nil { // sql.ErrNoRows when nothing downloaded, or a real error
+		return domain.Task{}, false
+	}
+	t.Status = domain.StatusProcessing
+	t.Stage = ""
+	t.UpdatedAt = time.Now().UTC()
+	if _, err := tx.Exec(`UPDATE tasks SET status=?, stage=?, updated_at=? WHERE id=?`,
+		t.Status, t.Stage, t.UpdatedAt.UnixNano(), t.ID); err != nil {
+		return domain.Task{}, false
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Task{}, false
+	}
+	s.notify()
+	return t, true
+}
+
 // SetStatus moves a task to st and records lastErr.
 func (s *Store) SetStatus(id string, st domain.Status, lastErr string) error {
 	return s.updateIf(id, always, func(t *domain.Task) {
 		t.Status = st
-		if st == domain.StatusFailed || st == domain.StatusQueued || st == domain.StatusPaused {
+		if st == domain.StatusFailed || st == domain.StatusQueued || st == domain.StatusDownloaded || st == domain.StatusPaused {
 			t.Stage = ""
 		}
 		t.LastError = lastErr
@@ -265,7 +295,11 @@ func (s *Store) Retry(id string, skipDownload bool) error {
 	return s.updateIf(id, func(t *domain.Task) bool {
 		return t.Status == domain.StatusFailed || t.Status == domain.StatusPaused || t.Status == domain.StatusDone
 	}, func(t *domain.Task) {
-		t.Status = domain.StatusQueued
+		if skipDownload {
+			t.Status = domain.StatusDownloaded
+		} else {
+			t.Status = domain.StatusQueued
+		}
 		t.SkipDownload = skipDownload
 		t.Attempts = 0
 		t.Stage = ""
@@ -278,7 +312,11 @@ func (s *Store) Retry(id string, skipDownload bool) error {
 func (s *Store) Resume(id string) error {
 	return s.updateIf(id, func(t *domain.Task) bool { return t.Status == domain.StatusPaused },
 		func(t *domain.Task) {
-			t.Status = domain.StatusQueued
+			if t.SkipDownload {
+				t.Status = domain.StatusDownloaded
+			} else {
+				t.Status = domain.StatusQueued
+			}
 			t.UpdatedAt = time.Now().UTC()
 		})
 }
@@ -294,29 +332,66 @@ func (s *Store) Pause(id string) error {
 	})
 }
 
-// RequeueActive moves tasks stuck in downloading/processing back to queued.
-// Call it on startup. Returns the requeued count.
+// RequeueActive moves tasks stuck in downloading/processing back to an actionable state on startup:
+// downloading -> queued, processing -> downloaded (if cache archive exists) or queued.
+// Returns the requeued count.
 func (s *Store) RequeueActive() (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// In SQLite a single UPDATE evaluates every right-hand side against the
-	// pre-update row, so the CASE still sees the old status.
-	res, err := s.db.Exec(`UPDATE tasks
-		SET last_error = CASE WHEN last_error='' THEN 'requeued after restart (was ' || status || ')' ELSE last_error END,
-		    status = ?, stage = '', updated_at = ?
-		WHERE status IN (?,?)`,
-		domain.StatusQueued, time.Now().UTC().UnixNano(), domain.StatusDownloading, domain.StatusProcessing)
+	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
 	}
-	n, err := res.RowsAffected()
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT `+cols+` FROM tasks WHERE status IN (?,?)`,
+		domain.StatusDownloading, domain.StatusProcessing)
 	if err != nil {
 		return 0, err
 	}
-	if n > 0 {
-		s.notify()
+	defer rows.Close()
+
+	var tasks []domain.Task
+	for rows.Next() {
+		t, err := scanTask(rows)
+		if err != nil {
+			return 0, err
+		}
+		tasks = append(tasks, t)
 	}
-	return int(n), nil
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	rows.Close()
+
+	if len(tasks) == 0 {
+		return 0, nil
+	}
+
+	now := time.Now().UTC()
+	for _, t := range tasks {
+		newStatus := domain.StatusQueued
+		if t.Status == domain.StatusProcessing {
+			archive := filepath.Join(s.dir, "cache", t.ID+".zip")
+			if _, err := os.Stat(archive); err == nil {
+				newStatus = domain.StatusDownloaded
+			}
+		}
+		lastErr := t.LastError
+		if lastErr == "" {
+			lastErr = "requeued after restart (was " + string(t.Status) + ")"
+		}
+		if _, err := tx.Exec(`UPDATE tasks SET status=?, stage='', last_error=?, updated_at=? WHERE id=?`,
+			newStatus, lastErr, now.UnixNano(), t.ID); err != nil {
+			return 0, err
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	s.notify()
+	return len(tasks), nil
 }
 
 // PruneTerminal drops the oldest done/failed tasks beyond maxRetainedTasks.
@@ -392,7 +467,7 @@ func (s *Store) Counts() (map[domain.Status]int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m := map[domain.Status]int{
-		domain.StatusQueued: 0, domain.StatusDownloading: 0, domain.StatusProcessing: 0,
+		domain.StatusQueued: 0, domain.StatusDownloading: 0, domain.StatusDownloaded: 0, domain.StatusProcessing: 0,
 		domain.StatusDone: 0, domain.StatusFailed: 0, domain.StatusPaused: 0,
 	}
 	rows, err := s.db.Query(`SELECT status, COUNT(*) FROM tasks GROUP BY status`)

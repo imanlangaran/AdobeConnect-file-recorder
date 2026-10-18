@@ -30,8 +30,8 @@ func TestFailTaskRetryBudget(t *testing.T) {
 		if err != nil || existed {
 			t.Fatalf("Enqueue: %+v %v %v", task, existed, err)
 		}
-		if _, ok := s.Claim(); !ok { // attempts=1
-			t.Fatal("Claim: nothing claimed")
+		if _, ok := s.ClaimDownload(); !ok { // attempts=1
+			t.Fatal("ClaimDownload: nothing claimed")
 		}
 		task, err = s.Get(task.ID)
 		if err != nil {
@@ -62,8 +62,8 @@ func TestFailTaskShutdownRequeues(t *testing.T) {
 		t.Fatal(err)
 	}
 	task, _, _ := s.Enqueue("https://example.test/r1", "r1")
-	if _, ok := s.Claim(); !ok {
-		t.Fatal("Claim: nothing claimed")
+	if _, ok := s.ClaimDownload(); !ok {
+		t.Fatal("ClaimDownload: nothing claimed")
 	}
 	task, _ = s.Get(task.ID)
 	task.Attempts = 99
@@ -125,7 +125,7 @@ func TestEnqueueTaskIsBornGrouped(t *testing.T) {
 	if _, existed, err := a.Enqueue(srv.URL+"/rec/", "r1"); err != nil || existed {
 		t.Fatalf("enqueue: existed=%v err=%v", existed, err)
 	}
-	claimed, ok := s.Claim()
+	claimed, ok := s.ClaimDownload()
 	if !ok {
 		t.Fatal("no task claimed")
 	}
@@ -203,13 +203,13 @@ func TestAdapterRetryAndStop(t *testing.T) {
 	if err := a.Retry(task.ID, "reconstruct"); err != nil {
 		t.Fatalf("reconstruct retry: %v", err)
 	}
-	if got, _ := s.Get(task.ID); got.Status != domain.StatusQueued || !got.SkipDownload {
+	if got, _ := s.Get(task.ID); got.Status != domain.StatusDownloaded || !got.SkipDownload {
 		t.Fatalf("after reconstruct retry: %+v", got)
 	}
 
 	// Resume: only a paused task, via the running-task stop path.
-	if _, ok := s.Claim(); !ok {
-		t.Fatal("Claim: nothing to claim")
+	if _, ok := s.ClaimReconstruct(); !ok {
+		t.Fatal("ClaimReconstruct: nothing to claim")
 	}
 	if err := s.Pause(task.ID); err != nil {
 		t.Fatal(err)
@@ -217,13 +217,13 @@ func TestAdapterRetryAndStop(t *testing.T) {
 	if err := a.Retry(task.ID, "resume"); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	if got, _ := s.Get(task.ID); got.Status != domain.StatusQueued || !got.SkipDownload {
+	if got, _ := s.Get(task.ID); got.Status != domain.StatusDownloaded || !got.SkipDownload {
 		t.Fatalf("after resume: %+v (must keep the reconstruct-only flag)", got)
 	}
 
 	// Stop with a registered run: cancels and parks the task in paused.
-	if _, ok := s.Claim(); !ok { // a registered run implies an active task
-		t.Fatal("Claim: nothing to claim")
+	if _, ok := s.ClaimReconstruct(); !ok { // a registered run implies an active task
+		t.Fatal("ClaimReconstruct: nothing to claim")
 	}
 	rh := a.rs.add(task.ID, func() {})
 	defer a.rs.remove(task.ID)
@@ -277,5 +277,19 @@ func TestFormatStage(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("formatStage(%q, %d, %d) = %q, want %q", tt.stage, tt.done, tt.total, got, tt.want)
 		}
+	}
+}
+
+func TestQueueAdapterWorkerLimits(t *testing.T) {
+	a := queueAdapter{cfg: config.Config{MaxDownloadWorkers: 5, MaxReconstructWorkers: 2}}
+	dl, rc := a.WorkerLimits()
+	if dl != 5 || rc != 2 {
+		t.Fatalf("WorkerLimits: got (%d, %d), want (5, 2)", dl, rc)
+	}
+	// Fallback to 1 on non-positive values
+	a0 := queueAdapter{cfg: config.Config{MaxDownloadWorkers: 0, MaxReconstructWorkers: -1}}
+	dl0, rc0 := a0.WorkerLimits()
+	if dl0 != 1 || rc0 != 1 {
+		t.Fatalf("WorkerLimits fallback: got (%d, %d), want (1, 1)", dl0, rc0)
 	}
 }

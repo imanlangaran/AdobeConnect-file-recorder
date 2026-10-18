@@ -12,7 +12,7 @@ func TestDefaultsOnMissingFile(t *testing.T) {
 		t.Fatalf("Load missing file: %v", err)
 	}
 	if c.Port != 8080 || c.DataDir != "./data" || c.RepositoryType != "file" ||
-		c.OutDir != "./recordings" || c.MaxWorkers != 2 {
+		c.OutDir != "./recordings" || c.MaxDownloadWorkers != 3 || c.MaxReconstructWorkers != 1 {
 		t.Fatalf("bad defaults: %+v", c)
 	}
 	if w, h := c.ResolutionDims(); w != 1280 || h != 720 {
@@ -25,7 +25,8 @@ func TestDefaultsOnMissingFile(t *testing.T) {
 
 func TestParseSampleFile(t *testing.T) {
 	p := filepath.Join(t.TempDir(), ".env")
-	body := "# comment\nexport PORT=9090\nDATA_DIR=/tmp/data\nOUT_DIR=/tmp/rec\nMAX_WORKERS=4\n" +
+	body := "# comment\nexport PORT=9090\nDATA_DIR=/tmp/data\nOUT_DIR=/tmp/rec\n" +
+		"MAX_DOWNLOAD_WORKERS=4\nMAX_RECONSTRUCT_WORKERS=2\n" +
 		"AC_USERNAME='u@x.com'\nAC_PASSWORD=\"pw\"\nDEFAULT_RESOLUTION=1080p\nDEFAULT_FPS=30\n" +
 		"DEFAULT_PRESET=fast\nDEFAULT_CRF=20\nEXPORT_MP3=false\nRETRY_COUNT=5\n"
 	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
@@ -35,7 +36,7 @@ func TestParseSampleFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if c.Port != 9090 || c.MaxWorkers != 4 || c.ACUsername != "u@x.com" || c.ACPassword != "pw" {
+	if c.Port != 9090 || c.MaxDownloadWorkers != 4 || c.MaxReconstructWorkers != 2 || c.ACUsername != "u@x.com" || c.ACPassword != "pw" {
 		t.Fatalf("bad parse: %+v", c)
 	}
 	if w, h := c.ResolutionDims(); w != 1920 || h != 1080 {

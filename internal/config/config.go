@@ -12,35 +12,37 @@ import (
 
 // Config holds queue-service settings.
 type Config struct {
-	Port              int
-	DataDir           string
-	RepositoryType    string // "file" (default) or "sqlite"
-	OutDir            string
-	MaxWorkers        int
-	ACUsername        string
-	ACPassword        string
-	DefaultResolution string
-	DefaultFPS        int
-	DefaultPreset     string
-	DefaultCRF        int
-	ExportMP3         bool
-	RetryCount        int
+	Port                  int
+	DataDir               string
+	RepositoryType        string // "file" (default) or "sqlite"
+	OutDir                string
+	MaxDownloadWorkers    int
+	MaxReconstructWorkers int
+	ACUsername            string
+	ACPassword            string
+	DefaultResolution     string
+	DefaultFPS            int
+	DefaultPreset         string
+	DefaultCRF            int
+	ExportMP3             bool
+	RetryCount            int
 }
 
 // defaults returns the default Config.
 func defaults() Config {
 	return Config{
-		Port:              8080,
-		DataDir:           "./data",
-		RepositoryType:    "file",
-		OutDir:            "./recordings",
-		MaxWorkers:        2,
-		DefaultResolution: "720p",
-		DefaultFPS:        25,
-		DefaultPreset:     "veryfast",
-		DefaultCRF:        23,
-		ExportMP3:         true,
-		RetryCount:        2,
+		Port:                  8080,
+		DataDir:               "./data",
+		RepositoryType:        "file",
+		OutDir:                "./recordings",
+		MaxDownloadWorkers:    3,
+		MaxReconstructWorkers: 1,
+		DefaultResolution:     "720p",
+		DefaultFPS:            25,
+		DefaultPreset:         "veryfast",
+		DefaultCRF:            23,
+		ExportMP3:             true,
+		RetryCount:            2,
 	}
 }
 
@@ -68,7 +70,8 @@ func Load(path string) (Config, error) {
 	// env overrides (non-empty wins). Note: USERNAME/PASSWORD are file-only
 	// fallbacks - on Windows USERNAME is always set (the login name), so
 	// honoring it here would clobber AC_USERNAME from the file.
-	for _, k := range []string{"PORT", "DATA_DIR", "REPOSITORY_TYPE", "OUT_DIR", "MAX_WORKERS",
+	for _, k := range []string{"PORT", "DATA_DIR", "REPOSITORY_TYPE", "OUT_DIR",
+		"MAX_DOWNLOAD_WORKERS", "MAX_RECONSTRUCT_WORKERS",
 		"AC_USERNAME", "AC_PASSWORD",
 		"DEFAULT_RESOLUTION", "DEFAULT_FPS", "DEFAULT_PRESET",
 		"DEFAULT_CRF", "EXPORT_MP3", "RETRY_COUNT"} {
@@ -142,7 +145,10 @@ func apply(c *Config, vals map[string]string) error {
 	if v := str("OUT_DIR"); v != "" {
 		c.OutDir = v
 	}
-	if err := num("MAX_WORKERS", &c.MaxWorkers); err != nil {
+	if err := num("MAX_DOWNLOAD_WORKERS", &c.MaxDownloadWorkers); err != nil {
+		return err
+	}
+	if err := num("MAX_RECONSTRUCT_WORKERS", &c.MaxReconstructWorkers); err != nil {
 		return err
 	}
 	if v := str("AC_USERNAME", "USERNAME"); v != "" {

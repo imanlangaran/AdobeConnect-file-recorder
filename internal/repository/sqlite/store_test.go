@@ -36,9 +36,16 @@ func TestEnqueueDedupeClaimDone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	claimed, ok := s.Claim()
+	claimed, ok := s.ClaimDownload()
 	if !ok || claimed.ID != a.ID || claimed.Status != domain.StatusDownloading || claimed.Attempts != 1 {
-		t.Fatalf("Claim: %+v ok=%v (oldest first, attempts incremented)", claimed, ok)
+		t.Fatalf("ClaimDownload: %+v ok=%v (oldest first, attempts incremented)", claimed, ok)
+	}
+	if err := s.SetStatus(a.ID, domain.StatusDownloaded, ""); err != nil {
+		t.Fatal(err)
+	}
+	reclaimed, ok := s.ClaimReconstruct()
+	if !ok || reclaimed.ID != a.ID || reclaimed.Status != domain.StatusProcessing {
+		t.Fatalf("ClaimReconstruct: %+v ok=%v", reclaimed, ok)
 	}
 	if err := s.SetStatus(b.ID, domain.StatusProcessing, ""); err != nil {
 		t.Fatal(err)
@@ -78,6 +85,12 @@ func TestEnqueueDedupeClaimDone(t *testing.T) {
 	if err := s.SetStatus(b.ID, domain.StatusFailed, "boom"); err != nil {
 		t.Fatal(err)
 	}
+	if _, ok := s.ClaimDownload(); ok {
+		t.Fatal("ClaimDownload after all non-queued: got task")
+	}
+	if _, ok := s.ClaimReconstruct(); ok {
+		t.Fatal("ClaimReconstruct after all non-downloaded: got task")
+	}
 	c, _, err := s.Enqueue("https://example.test/r2", "r2")
 	if err != nil || c.ID == b.ID {
 		t.Fatalf("re-enqueue after failure: %+v err=%v", c, err)
@@ -94,7 +107,7 @@ func TestStatesAndErrors(t *testing.T) {
 	if err := s.Pause(task.ID); !errors.Is(err, domain.ErrBadState) {
 		t.Fatalf("Pause queued: want ErrBadState, got %v", err)
 	}
-	if _, ok := s.Claim(); !ok {
+	if _, ok := s.ClaimDownload(); !ok {
 		t.Fatal("Claim: nothing")
 	}
 	if err := s.Pause(task.ID); err != nil {
@@ -119,8 +132,18 @@ func TestStatesAndErrors(t *testing.T) {
 		t.Fatalf("Retry failed: %v", err)
 	}
 	got, _ := s.Get(task.ID)
-	if got.Status != domain.StatusQueued || got.Attempts != 0 || !got.SkipDownload || got.LastError != "" {
+	if got.Status != domain.StatusDownloaded || got.Attempts != 0 || !got.SkipDownload || got.LastError != "" {
 		t.Fatalf("after Retry: %+v", got)
+	}
+	if err := s.SetStatus(task.ID, domain.StatusFailed, "boom"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Retry(task.ID, false); err != nil {
+		t.Fatalf("Retry full failed: %v", err)
+	}
+	got, _ = s.Get(task.ID)
+	if got.Status != domain.StatusQueued || got.Attempts != 0 || got.SkipDownload {
+		t.Fatalf("after Retry full: %+v", got)
 	}
 }
 
@@ -232,5 +255,80 @@ func TestOpenEscapesDataDir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, "queue.db")); err != nil {
 		t.Fatalf("queue.db must live inside the requested dir: %v", err)
+	}
+}
+
+func TestRequeueActive(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+
+	if n, err := s.RequeueActive(); err != nil || n != 0 {
+		t.Fatalf("RequeueActive empty = %d, %v", n, err)
+	}
+	a, _, _ := s.Enqueue("https://example.test/r1", "r1")
+	b, _, _ := s.Enqueue("https://example.test/r2", "r2")
+	c, _, _ := s.Enqueue("https://example.test/r3", "r3")
+	d, _, _ := s.Enqueue("https://example.test/r4", "r4")
+
+	claimed, ok := s.ClaimDownload() // a -> downloading, attempt 1
+	if !ok || claimed.ID != a.ID {
+		t.Fatalf("ClaimDownload: %+v %v", claimed, ok)
+	}
+
+	// b: downloaded -> processing with cached zip file
+	if err := s.SetStatus(b.ID, domain.StatusDownloaded, ""); err != nil {
+		t.Fatal(err)
+	}
+	if claimedB, ok := s.ClaimReconstruct(); !ok || claimedB.ID != b.ID {
+		t.Fatalf("ClaimReconstruct b: %+v %v", claimedB, ok)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "cache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cache", b.ID+".zip"), []byte("archive"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// c: downloaded -> processing without cached zip file
+	if err := s.SetStatus(c.ID, domain.StatusDownloaded, ""); err != nil {
+		t.Fatal(err)
+	}
+	if claimedC, ok := s.ClaimReconstruct(); !ok || claimedC.ID != c.ID {
+		t.Fatalf("ClaimReconstruct c: %+v %v", claimedC, ok)
+	}
+
+	// d: downloaded, idle -> must remain downloaded
+	if err := s.SetStatus(d.ID, domain.StatusDownloaded, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if n, err := s.RequeueActive(); err != nil || n != 3 {
+		t.Fatalf("RequeueActive = %d, %v; want 3", n, err)
+	}
+
+	gotA, _ := s.Get(a.ID)
+	if gotA.Status != domain.StatusQueued || gotA.LastError == "" {
+		t.Fatalf("task a = %+v, want queued with restart note", gotA)
+	}
+	gotB, _ := s.Get(b.ID)
+	if gotB.Status != domain.StatusDownloaded || gotB.LastError == "" {
+		t.Fatalf("task b = %+v, want downloaded with restart note", gotB)
+	}
+	gotC, _ := s.Get(c.ID)
+	if gotC.Status != domain.StatusQueued || gotC.LastError == "" {
+		t.Fatalf("task c = %+v, want queued with restart note", gotC)
+	}
+	gotD, _ := s.Get(d.ID)
+	if gotD.Status != domain.StatusDownloaded {
+		t.Fatalf("task d = %+v, want downloaded unchanged", gotD)
+	}
+
+	reclaimed, ok := s.ClaimDownload()
+	if !ok || reclaimed.ID != a.ID || reclaimed.Attempts != 2 {
+		t.Fatalf("re-claim: %+v %v (attempts must resume, not reset)", reclaimed, ok)
 	}
 }
