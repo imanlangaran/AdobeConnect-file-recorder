@@ -4,9 +4,12 @@ services:
       context: .
       args:
         VERSION: ${VERSION:-dev}
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,https://proxy.golang.org,direct}
     ports:
       - "${PORT:-8080}:${PORT:-8080}"
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATA_DIR: /data
       OUT_DIR: /recordings
