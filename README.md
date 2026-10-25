@@ -1,5 +1,7 @@
 # AdobeConnect-file-recorder
 
+![Adobe Connect File Recorder Banner](docs/screenshots/showcase-banner-themes-1920x1080.png)
+
 Downloads and reconstructs Adobe Connect **Standard AV** (FLV/VP6-era) offline
 recordings — the old recordings that have **no download button and no MP4
 rendition** — into a single MP4 with embedded audio, plus sidecar files.
@@ -117,3 +119,32 @@ existing `queue.json` on first start), `OUT_DIR`, `MAX_DOWNLOAD_WORKERS`,
 ```sh
 docker compose up --build
 ```
+
+### Dashboard UI
+
+<p align="center">
+  <img src="docs/screenshots/ui-dark-night.png" alt="ac-rec web queue dashboard (Night theme)" width="100%">
+</p>
+
+<table align="center" width="100%">
+  <tr>
+    <td width="50%"><img src="docs/screenshots/ui-light-corporate.png" alt="Corporate (Light) Theme"></td>
+    <td width="50%"><img src="docs/screenshots/ui-vibrant-synthwave.png" alt="Synthwave (Neon) Theme"></td>
+  </tr>
+  <tr>
+    <td align="center"><em>Corporate (Light) Theme</em></td>
+    <td align="center"><em>Synthwave (Neon) Theme</em></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/screenshots/ui-modal-detail.png" alt="Task Inspection Modal"></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><em>Task Inspection Modal (Report details, video/audio artifacts, warnings)</em></td>
+  </tr>
+</table>
+
+### Pipeline & Reconstruction Layout
+
+<p align="center">
+  <img src="docs/screenshots/showcase-banner-1920x1080.png" alt="Pipeline & Reconstruction Layout" width="100%">
+</p>

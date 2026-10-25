@@ -1,5 +1,7 @@
 # AdobeConnect-file-recorder
 
+![بنر معرفی پروژه Adobe Connect File Recorder](docs/screenshots/showcase-banner-themes-1920x1080.png)
+
 ابزار دانلود و بازسازی جلسات ضبط‌شده آفلاین Adobe Connect با فرمت **Standard AV** (عصر FLV/VP6) — همان ضبط‌های قدیمی که دکمه دانلود مستقیم یا نسخه MP4 ندارند — در قالب یک فایل MP4 یکپارچه همراه با صدای تعبیه‌شده و فایل‌های جانبی.
 
 خروجی پیش‌فرض یک **ویدیو با رزولوشن 1280×720 شبیه‌سازی‌شده بر اساس چیدمان کلاس** است: محتوای ارائه‌شده در سمت چپ، همراه با لیست حاضرین و تاریخچه چت (هماهنگ با زمان ویدیو) که به صورت زیرنویس در یک نوار کناری (Sidebar) با عرض ۳۲۰ پیکسل در سمت راست حک (Burn-in) می‌شود. ارتفاع این نوار دقیقاً بر ارتفاع ویدیوی اصلی منطبق است.
@@ -91,3 +93,32 @@ curl -X POST localhost:8080/api/tasks \
 ```sh
 docker compose up --build
 ```
+
+### رابط کاربری داشبورد تحت وب
+
+<p align="center">
+  <img src="docs/screenshots/ui-dark-night.png" alt="داشبورد مدیریت صف دانلود و بازسازی (تم Night)" width="100%">
+</p>
+
+<table align="center" width="100%">
+  <tr>
+    <td width="50%"><img src="docs/screenshots/ui-light-corporate.png" alt="تم روشن Corporate"></td>
+    <td width="50%"><img src="docs/screenshots/ui-vibrant-synthwave.png" alt="تم نئونی Synthwave"></td>
+  </tr>
+  <tr>
+    <td align="center"><em>تم روشن Corporate</em></td>
+    <td align="center"><em>تم نئونی Synthwave</em></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/screenshots/ui-modal-detail.png" alt="مودال جزئیات پردازش وظیفه"></td>
+  </tr>
+  <tr>
+    <td colspan="2" align="center"><em>مودال بررسی جزئیات پردازش، خروجی‌های مدیا، مدت‌زمان و خطاها</em></td>
+  </tr>
+</table>
+
+### معماری و چیدمان خروجی بازسازی‌شده
+
+<p align="center">
+  <img src="docs/screenshots/showcase-banner-1920x1080.png" alt="معماری و چیدمان خروجی بازسازی‌شده" width="100%">
+</p>

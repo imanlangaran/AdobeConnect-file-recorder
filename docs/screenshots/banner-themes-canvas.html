@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ac-rec Multi-Theme Showcase Banner</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Urbanist:wght@600;700;800;900&family=JetBrains+Mono:wght@700;800;900&display=swap" rel="stylesheet">
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      width: 1920px;
+      height: 1080px;
+      overflow: hidden;
+      background-color: #030712;
+      font-family: 'Urbanist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      color: #f8fafc;
+      position: relative;
+    }
+
+    /* Ambient background glows */
+    .bg-canvas {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      overflow: hidden;
+    }
+    .glow-blue {
+      position: absolute;
+      top: -80px;
+      left: -50px;
+      width: 1000px;
+      height: 1000px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(59, 130, 246, 0.32) 0%, rgba(59, 130, 246, 0.05) 50%, transparent 70%);
+      filter: blur(100px);
+    }
+    .glow-purple {
+      position: absolute;
+      bottom: -80px;
+      left: 200px;
+      width: 950px;
+      height: 950px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(168, 85, 247, 0.28) 0%, rgba(168, 85, 247, 0.05) 55%, transparent 70%);
+      filter: blur(105px);
+    }
+    .glow-right {
+      position: absolute;
+      top: 0%;
+      right: -5%;
+      width: 1200px;
+      height: 1200px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(59, 130, 246, 0.26) 0%, rgba(168, 85, 247, 0.18) 45%, transparent 70%);
+      filter: blur(110px);
+    }
+    .grid-pattern {
+      position: absolute;
+      inset: 0;
+      background-image: 
+        linear-gradient(to right, rgba(255, 255, 255, 0.04) 2px, transparent 2px),
+        linear-gradient(to bottom, rgba(255, 255, 255, 0.04) 2px, transparent 2px);
+      background-size: 72px 72px;
+      mask-image: radial-gradient(circle at 60% 50%, black 45%, transparent 85%);
+      -webkit-mask-image: radial-gradient(circle at 60% 50%, black 45%, transparent 85%);
+    }
+
+    /* Main Container: edge-to-edge maximum fill */
+    .container {
+      position: relative;
+      z-index: 10;
+      width: 100%;
+      height: 100%;
+      display: flex;
+      padding: 35px 20px 35px 50px;
+      gap: 20px;
+    }
+
+    /* Left Side: Massive, punchy title and badges */
+    .left-col {
+      width: 780px;
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      z-index: 20;
+      padding: 15px 0;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      padding: 12px 28px;
+      border-radius: 9999px;
+      background: rgba(30, 41, 59, 0.85);
+      border: 2px solid rgba(59, 130, 246, 0.5);
+      box-shadow: 0 4px 35px rgba(59, 130, 246, 0.35);
+      font-size: 19px;
+      font-weight: 900;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #93c5fd;
+      margin-bottom: 24px;
+    }
+    .pulse-dot {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #38bdf8;
+      box-shadow: 0 0 18px #38bdf8;
+    }
+
+    .headline {
+      font-size: 116px;
+      line-height: 0.96;
+      font-weight: 900;
+      letter-spacing: -0.045em;
+      margin-bottom: 24px;
+    }
+    .headline .grad {
+      background: linear-gradient(135deg, #60a5fa 0%, #c084fc 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      display: block;
+      white-space: nowrap;
+    }
+    .headline .solid {
+      color: #ffffff;
+      display: block;
+      white-space: nowrap;
+    }
+
+    .tagline {
+      font-size: 28px;
+      line-height: 1.4;
+      font-weight: 600;
+      color: #94a3b8;
+      max-width: 720px;
+      margin-bottom: 34px;
+    }
+    .tagline strong {
+      color: #ffffff;
+      font-weight: 800;
+    }
+
+    /* Huge Tech Badges */
+    .tech-stack {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      margin-bottom: 26px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      padding: 16px 32px;
+      border-radius: 18px;
+      background: rgba(17, 24, 39, 0.95);
+      backdrop-filter: blur(14px);
+      border: 2px solid rgba(255, 255, 255, 0.2);
+      font-size: 26px;
+      font-weight: 800;
+      color: #ffffff;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.7);
+    }
+    .badge-icon {
+      display: flex;
+      align-items: center;
+    }
+
+    /* Theme Chips */
+    .theme-chips {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .theme-chip {
+      font-size: 17px;
+      font-weight: 800;
+      padding: 8px 18px;
+      border-radius: 10px;
+      border: 2px solid transparent;
+      letter-spacing: 0.02em;
+    }
+    .chip-night {
+      background: rgba(15, 23, 42, 0.95);
+      color: #38bdf8;
+      border-color: rgba(56, 189, 248, 0.7);
+      box-shadow: 0 0 20px rgba(56, 189, 248, 0.35);
+    }
+    .chip-synthwave {
+      background: rgba(45, 27, 105, 0.95);
+      color: #f472b6;
+      border-color: rgba(244, 114, 182, 0.6);
+    }
+    .chip-corporate {
+      background: #ffffff;
+      color: #0f172a;
+      border-color: #cbd5e1;
+    }
+    .chip-dracula {
+      background: #282a36;
+      color: #bd93f9;
+      border-color: rgba(189, 147, 249, 0.6);
+    }
+    .chip-emerald {
+      background: rgba(6, 78, 59, 0.95);
+      color: #34d399;
+      border-color: rgba(52, 211, 153, 0.6);
+    }
+
+    /* Brand mark bottom */
+    .brand-mark {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      padding-top: 24px;
+      border-top: 2px solid rgba(255, 255, 255, 0.12);
+    }
+    .logo-box {
+      width: 64px;
+      height: 64px;
+      border-radius: 16px;
+      background: linear-gradient(135deg, #2563eb, #7c3aed);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 900;
+      font-size: 30px;
+      color: white;
+      box-shadow: 0 4px 25px rgba(37, 99, 235, 0.55);
+    }
+    .brand-meta {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .brand-name {
+      font-family: 'JetBrains Mono', monospace;
+      font-weight: 900;
+      font-size: 26px;
+      letter-spacing: -0.01em;
+      color: #f8fafc;
+    }
+    .brand-sub {
+      font-size: 16px;
+      color: #94a3b8;
+      font-weight: 600;
+    }
+
+    /* Right Side 3D Stage: MAXIMUM CANVAS FILL */
+    .right-col {
+      flex: 1;
+      height: 100%;
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      perspective: 1600px;
+    }
+
+    /* Card Stack: Maximum dimensions */
+    .card-stack {
+      position: relative;
+      width: 1180px;
+      height: 1060px;
+      transform-style: preserve-3d;
+      transform: rotateY(-11deg) rotateX(5deg) rotateZ(1deg);
+      margin-right: -60px;
+      margin-top: -10px;
+    }
+
+    /* Common Card Styling: 800px height for maximum screen presence */
+    .stacked-card {
+      position: absolute;
+      width: 1060px;
+      height: 800px;
+      border-radius: 28px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transform-style: preserve-3d;
+    }
+
+    /* Large Header bar in each stacked card */
+    .card-header {
+      height: 72px;
+      display: flex;
+      align-items: center;
+      padding: 0 28px;
+      gap: 20px;
+      border-bottom: 2px solid rgba(255, 255, 255, 0.14);
+      position: relative;
+    }
+    .window-dots {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .dot {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+    }
+    .dot-red { background: #ef4444; }
+    .dot-yellow { background: #f59e0b; }
+    .dot-green { background: #10b981; }
+
+    .theme-tag-corner {
+      font-size: 17px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 8px 22px;
+      border-radius: 9999px;
+      box-shadow: 0 4px 22px rgba(0,0,0,0.6);
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .card-body {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+    }
+    .card-body img {
+      width: 104%;
+      margin-left: -2%;
+      margin-top: -1%;
+      height: auto;
+      display: block;
+      object-fit: cover;
+      object-position: top;
+    }
+
+    /* Layer 5: Emerald (Light Green Theme) - Back-most */
+    .layer-emerald {
+      top: 0px;
+      left: 0px;
+      transform: translateZ(-320px);
+      z-index: 10;
+      background: #ffffff;
+      border: 4px solid #10b981;
+      box-shadow: 
+        -30px 30px 80px rgba(0, 0, 0, 0.9),
+        0 0 70px rgba(16, 185, 129, 0.55);
+    }
+    .layer-emerald .card-header {
+      background: #ecfdf5;
+      border-bottom: 3px solid #a7f3d0;
+    }
+    .layer-emerald .theme-tag-corner {
+      background: #10b981;
+      color: #ffffff;
+    }
+
+    /* Layer 4: Corporate (Light Blue Theme) */
+    .layer-corporate {
+      top: 85px;
+      left: 45px;
+      transform: translateZ(-240px);
+      z-index: 15;
+      background: #ffffff;
+      border: 4px solid #3b82f6;
+      box-shadow: 
+        -35px 35px 90px rgba(0, 0, 0, 0.92),
+        0 0 75px rgba(59, 130, 246, 0.55);
+    }
+    .layer-corporate .card-header {
+      background: #f8fafc;
+      border-bottom: 3px solid #cbd5e1;
+    }
+    .layer-corporate .theme-tag-corner {
+      background: #2563eb;
+      color: #ffffff;
+    }
+
+    /* Layer 3: Synthwave (Neon Magenta / Cyan Theme) */
+    .layer-synthwave {
+      top: 170px;
+      left: 90px;
+      transform: translateZ(-160px);
+      z-index: 20;
+      background: #1a103c;
+      border: 4px solid #f43f5e;
+      box-shadow: 
+        -40px 40px 100px rgba(0, 0, 0, 0.94),
+        0 0 80px rgba(244, 63, 94, 0.55);
+    }
+    .layer-synthwave .card-header {
+      background: #2d1b69;
+      border-bottom: 3px solid rgba(244, 63, 94, 0.5);
+    }
+    .layer-synthwave .theme-tag-corner {
+      background: linear-gradient(135deg, #f43f5e, #fb7185);
+      color: #ffffff;
+    }
+
+    /* Layer 2: Dracula (Vampire Purple / Cyan Theme) */
+    .layer-dracula {
+      top: 255px;
+      left: 135px;
+      transform: translateZ(-80px);
+      z-index: 25;
+      background: #282a36;
+      border: 4px solid #bd93f9;
+      box-shadow: 
+        -45px 45px 110px rgba(0, 0, 0, 0.96),
+        0 0 85px rgba(189, 147, 249, 0.55);
+    }
+    .layer-dracula .card-header {
+      background: #21222c;
+      border-bottom: 3px solid rgba(189, 147, 249, 0.5);
+    }
+    .layer-dracula .theme-tag-corner {
+      background: #bd93f9;
+      color: #1e1f29;
+    }
+
+    /* Layer 1: FRONT HERO (Night Dark - Most Popular, 100% visible) */
+    .layer-night-front {
+      top: 340px;
+      left: 180px;
+      transform: translateZ(0px);
+      z-index: 40;
+      background: #0f172a;
+      border: 3.5px solid rgba(255, 255, 255, 0.35);
+      box-shadow: 
+        -55px 65px 170px -15px rgba(0, 0, 0, 0.98),
+        0 0 130px -10px rgba(59, 130, 246, 0.6),
+        0 0 0 2px rgba(255, 255, 255, 0.2);
+    }
+    .layer-night-front .card-header {
+      height: 74px;
+      background: rgba(15, 23, 42, 0.98);
+      border-bottom: 2px solid rgba(255, 255, 255, 0.18);
+      padding: 0 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+    }
+    .layer-night-front .theme-tag-corner {
+      background: linear-gradient(135deg, #3b82f6, #a855f7);
+      color: #ffffff;
+      padding: 8px 22px;
+      font-size: 17px;
+      font-weight: 900;
+    }
+    .card-title-pill {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 17px;
+      font-weight: 800;
+      color: #cbd5e1;
+      height: 46px;
+      padding: 0 24px;
+      background: rgba(30, 41, 59, 0.9);
+      border: 2px solid rgba(255, 255, 255, 0.14);
+      border-radius: 12px;
+    }
+    .live-badge-right {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 17px;
+      font-weight: 900;
+      color: #10b981;
+      background: rgba(16, 185, 129, 0.25);
+      border: 2px solid rgba(16, 185, 129, 0.5);
+      padding: 7px 20px;
+      border-radius: 9999px;
+      box-shadow: 0 0 20px rgba(16, 185, 129, 0.35);
+    }
+    .live-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 12px #10b981;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="bg-canvas">
+    <div class="glow-blue"></div>
+    <div class="glow-purple"></div>
+    <div class="glow-right"></div>
+    <div class="grid-pattern"></div>
+  </div>
+
+  <div class="container">
+    <!-- Left Column -->
+    <div class="left-col">
+      <div>
+        <div class="eyebrow">
+          <span class="pulse-dot"></span>
+          Multi-Theme Live Queue
+        </div>
+
+        <h1 class="headline">
+          <span class="grad">Adobe Connect</span>
+          <span class="solid">File Recorder</span>
+        </h1>
+
+        <p class="tagline">
+          Automated stream extraction & layout reconstruction with <strong>real-time SSE queue</strong> across <strong>8 built-in themes</strong>.
+        </p>
+
+        <div class="tech-stack">
+          <div class="badge">
+            <span class="badge-icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+            </span>
+            <span>Go</span>
+          </div>
+          <div class="badge">
+            <span class="badge-icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polygon points="23 7 16 12 23 17 23 7"></polygon><rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect></svg>
+            </span>
+            <span>FFmpeg</span>
+          </div>
+          <div class="badge">
+            <span class="badge-icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#a855f7" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path></svg>
+            </span>
+            <span>SQLite</span>
+          </div>
+          <div class="badge">
+            <span class="badge-icon">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"></path><path d="M12 12v9"></path><path d="m8 17 4 4 4-4"></path></svg>
+            </span>
+            <span>Docker</span>
+          </div>
+        </div>
+
+        <div class="theme-chips">
+          <span class="theme-chip chip-night">★ Night (Popular)</span>
+          <span class="theme-chip chip-dracula">Dracula</span>
+          <span class="theme-chip chip-synthwave">Synthwave</span>
+          <span class="theme-chip chip-corporate">Corporate</span>
+          <span class="theme-chip chip-emerald">Emerald</span>
+        </div>
+      </div>
+
+      <div class="brand-mark">
+        <div class="logo-box">&gt;_</div>
+        <div class="brand-meta">
+          <div class="brand-name">ac-rec • v0.1.0</div>
+          <div class="brand-sub">Modern Go Architecture • Instant Theme Switching</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Column 3D Stack Stage -->
+    <div class="right-col">
+      <div class="card-stack">
+
+        <!-- Layer 5: Emerald (Light Green Theme) - Back-most -->
+        <div class="stacked-card layer-emerald">
+          <div class="card-header">
+            <div class="window-dots">
+              <div class="dot dot-red"></div>
+              <div class="dot dot-yellow"></div>
+              <div class="dot dot-green"></div>
+            </div>
+            <span class="theme-tag-corner">Emerald</span>
+          </div>
+          <div class="card-body">
+            <img src="ui-vibrant-emerald.png" alt="Emerald Theme">
+          </div>
+        </div>
+
+        <!-- Layer 4: Corporate (Light Blue Theme) -->
+        <div class="stacked-card layer-corporate">
+          <div class="card-header">
+            <div class="window-dots">
+              <div class="dot dot-red"></div>
+              <div class="dot dot-yellow"></div>
+              <div class="dot dot-green"></div>
+            </div>
+            <span class="theme-tag-corner">Corporate</span>
+          </div>
+          <div class="card-body">
+            <img src="ui-light-corporate.png" alt="Corporate Theme">
+          </div>
+        </div>
+
+        <!-- Layer 3: Synthwave (Neon Magenta / Cyan Theme) -->
+        <div class="stacked-card layer-synthwave">
+          <div class="card-header">
+            <div class="window-dots">
+              <div class="dot dot-red"></div>
+              <div class="dot dot-yellow"></div>
+              <div class="dot dot-green"></div>
+            </div>
+            <span class="theme-tag-corner">Synthwave</span>
+          </div>
+          <div class="card-body">
+            <img src="ui-vibrant-synthwave.png" alt="Synthwave Theme">
+          </div>
+        </div>
+
+        <!-- Layer 2: Dracula (Vampire Purple / Cyan Theme) -->
+        <div class="stacked-card layer-dracula">
+          <div class="card-header">
+            <div class="window-dots">
+              <div class="dot dot-red"></div>
+              <div class="dot dot-yellow"></div>
+              <div class="dot dot-green"></div>
+            </div>
+            <span class="theme-tag-corner">Dracula</span>
+          </div>
+          <div class="card-body">
+            <img src="ui-dark-dracula.png" alt="Dracula Theme">
+          </div>
+        </div>
+
+        <!-- Layer 1: FRONT HERO (Night Dark - Most Popular) -->
+        <div class="stacked-card layer-night-front">
+          <div class="card-header">
+            <div class="header-left">
+              <div class="window-dots">
+                <div class="dot dot-red"></div>
+                <div class="dot dot-yellow"></div>
+                <div class="dot dot-green"></div>
+              </div>
+              <span class="theme-tag-corner">
+                <span>★</span>
+                <span>Night (Most Popular)</span>
+              </span>
+            </div>
+            <div class="card-title-pill">
+              <span>🔒</span>
+              <span>http://localhost:8080/ — ac-rec queue</span>
+            </div>
+            <div class="live-badge-right">
+              <span class="live-dot"></span>
+              LIVE
+            </div>
+          </div>
+          <div class="card-body">
+            <img src="ui-dark-night.png" alt="Night Theme - Popular">
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
