@@ -16,7 +16,7 @@ var ErrInvalidURL = errors.New("invalid recording URL")
 type RecordingURL struct {
 	Scheme  string // http or https
 	Host    string // host[:port]
-	ID      string // recording id, e.g. "p15rdeovw4ge"
+	ID      string // recording id, e.g. "meeting12345678"
 	BaseURL string // scheme://host/<id>
 }
 
@@ -54,7 +54,7 @@ func Parse(raw string) (RecordingURL, error) {
 // PageURL is the recording page (with the original query, e.g. ?session=...).
 func (r RecordingURL) PageURL() string { return r.BaseURL + "/" }
 
-// ZipURL is the raw recording archive endpoint, verified against webinar5.um.ac.ir.
+// ZipURL is the raw recording archive endpoint, verified against Adobe Connect servers.
 func (r RecordingURL) ZipURL() string {
 	return fmt.Sprintf("%s/output/%s.zip?download=zip", r.BaseURL, r.ID)
 }

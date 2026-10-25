@@ -13,7 +13,7 @@ import (
 )
 
 // TestResolveFolderLive checks the real recording page + sco-info API.
-// Skipped unless AC_LIVE_URL is set (e.g. AC_LIVE_URL=https://webinar5.um.ac.ir/p15rdeovw4ge/)
+// Skipped unless AC_LIVE_URL is set (e.g. AC_LIVE_URL=https://connect.example.com/meeting12345678/)
 // because it needs network + credentials from ./.env.
 func TestResolveFolderLive(t *testing.T) {
 	page := os.Getenv("AC_LIVE_URL")
@@ -98,7 +98,7 @@ func TestResolveFolder(t *testing.T) {
 			http.Redirect(w, r, "/login/", http.StatusFound)
 			return
 		}
-		fmt.Fprint(w, `<html><body><script>var eventSco = "223446";</script></body></html>`)
+		fmt.Fprint(w, `<html><body><script>var eventSco = "123456";</script></body></html>`)
 	})
 	mux.HandleFunc("/api/xml", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("action") == "login" {
@@ -111,8 +111,8 @@ func TestResolveFolder(t *testing.T) {
 			return
 		}
 		switch r.URL.Query().Get("sco-id") {
-		case "223446": // the recording's sco → its parent folder
-			fmt.Fprint(w, `<results><status code="ok"/><sco account-id="7" folder-id="44063" sco-id="223446" type="content"><name>x_0</name></sco></results>`)
+		case "123456": // the recording's sco → its parent folder
+			fmt.Fprint(w, `<results><status code="ok"/><sco account-id="7" folder-id="44063" sco-id="123456" type="content"><name>x_0</name></sco></results>`)
 		case "44063": // the folder → its human name
 			fmt.Fprint(w, `<results><status code="ok"/><sco account-id="7" folder-id="43971" sco-id="44063" type="meeting"><name>&#1578;&#1586;&#1610;&#1585; &#1711;&#1585;&#1608;&#1607; 200</name></sco></results>`)
 		default:

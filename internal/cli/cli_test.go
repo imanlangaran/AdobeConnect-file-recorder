@@ -140,7 +140,7 @@ func TestFetchTitleStripsAdobeConnectSuffix(t *testing.T) {
 }
 
 // TestFetchTitleLive checks the real recording page. Skipped unless
-// AC_LIVE_URL is set (e.g. AC_LIVE_URL=https://webinar5.um.ac.ir/p15rdeovw4ge/)
+// AC_LIVE_URL is set (e.g. AC_LIVE_URL=https://connect.example.com/meeting12345678/)
 // because it needs network + credentials from ./.env.
 func TestFetchTitleLive(t *testing.T) {
 	page := os.Getenv("AC_LIVE_URL")

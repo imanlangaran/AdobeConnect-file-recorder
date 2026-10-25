@@ -22,13 +22,13 @@ go test ./...
 
 ```sh
 # پایپ‌لاین کامل: دانلود فایل آرشیو + بازسازی و تبدیل
-bin/ac-rec download 'https://webinar5.um.ac.ir/p15rdeovw4ge/' --session '<BREEZESESSION>'
+bin/ac-rec download 'https://connect.example.com/meeting12345678/' --session '<BREEZESESSION>'
 
 # همان عملیات با ورود خودکار از طریق فایل .env (بدون نیاز به --session)
-bin/ac-rec download 'https://webinar5.um.ac.ir/p15rdeovw4ge/'
+bin/ac-rec download 'https://connect.example.com/meeting12345678/'
 
 # بازسازی آفلاین از روی فایل ZIP دانلود شده
-bin/ac-rec reconstruct ~/Downloads/p15rdeovw4ge.zip
+bin/ac-rec reconstruct ~/Downloads/meeting12345678.zip
 ```
 
 ### نحوه دریافت کوکی Session:
@@ -81,7 +81,7 @@ bin/ac-rec serve [--env .env]
 
 curl -X POST localhost:8080/api/tasks \
   -H 'Content-Type: application/json' \
-  -d '{"url":"https://webinar5.um.ac.ir/p15rdeovw4ge/"}'
+  -d '{"url":"https://connect.example.com/meeting12345678/"}'
 ```
 
 داشبورد وضعیت در نشانی `http://localhost:8080/` و وضعیت صف در اندپوینت‌های `GET /api/tasks` و `GET /api/tasks/{id}` در دسترس است. تنظیمات در `.env` شامل: `PORT`، `DATA_DIR` (تنظیم `REPOSITORY_TYPE=file|sqlite` نوع پایگاه داده را مشخص می‌کند؛ انتخاب `sqlite` فایل `queue.json` قدیمی را به صورت خودکار ایمپورت می‌کند)، `OUT_DIR`، `MAX_DOWNLOAD_WORKERS`، `MAX_RECONSTRUCT_WORKERS`، مشخصات ورود `AC_USERNAME`/`AC_PASSWORD`، پارامترهای پیش‌فرض رندر (`DEFAULT_RESOLUTION`, `DEFAULT_FPS`, `DEFAULT_PRESET`, `DEFAULT_CRF`, `EXPORT_MP3`) و `RETRY_COUNT`.

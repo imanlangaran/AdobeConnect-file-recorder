@@ -104,12 +104,12 @@ func TestEnqueueTaskIsBornGrouped(t *testing.T) {
 		case r.URL.Path == "/api/xml" && r.URL.Query().Get("action") == "login":
 			http.SetCookie(w, &http.Cookie{Name: "BREEZESESSION", Value: "s1"})
 			fmt.Fprint(w, `<results><status code="ok"/></results>`)
-		case r.URL.Path == "/api/xml" && r.URL.Query().Get("sco-id") == "223446":
-			fmt.Fprint(w, `<results><status code="ok"/><sco folder-id="44063" sco-id="223446"><name>x_0</name></sco></results>`)
+		case r.URL.Path == "/api/xml" && r.URL.Query().Get("sco-id") == "123456":
+			fmt.Fprint(w, `<results><status code="ok"/><sco folder-id="44063" sco-id="123456"><name>x_0</name></sco></results>`)
 		case r.URL.Path == "/api/xml" && r.URL.Query().Get("sco-id") == "44063":
 			fmt.Fprint(w, `<results><status code="ok"/><sco sco-id="44063"><name>Class 200</name></sco></results>`)
 		case r.URL.Path == "/rec/":
-			fmt.Fprint(w, `<html><script>var eventSco = "223446";</script></html>`)
+			fmt.Fprint(w, `<html><script>var eventSco = "123456";</script></html>`)
 		default:
 			http.Error(w, "no-access", http.StatusForbidden)
 		}

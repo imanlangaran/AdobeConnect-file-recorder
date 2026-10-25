@@ -132,7 +132,7 @@ func (f *fakeStore) WorkerLimits() (int, int) {
 func TestPostValidAccepted(t *testing.T) {
 	h := New(newFake())
 	req := httptest.NewRequest(http.MethodPost, "/api/tasks",
-		strings.NewReader(`{"url":"https://example.adobeconnect.com/p15rdeovw4ge/"}`))
+		strings.NewReader(`{"url":"https://example.adobeconnect.com/meeting12345678/"}`))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -143,8 +143,8 @@ func TestPostValidAccepted(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.RecordingID != "p15rdeovw4ge" {
-		t.Fatalf("want recordingID p15rdeovw4ge, got %q", got.RecordingID)
+	if got.RecordingID != "meeting12345678" {
+		t.Fatalf("want recordingID meeting12345678, got %q", got.RecordingID)
 	}
 }
 
@@ -163,7 +163,7 @@ func TestPostInvalidBadRequest(t *testing.T) {
 
 func TestPostFormAccepted(t *testing.T) {
 	h := New(newFake())
-	form := strings.NewReader("url=" + "https%3A%2F%2Fexample.adobeconnect.com%2Fp15rdeovw4ge%2F")
+	form := strings.NewReader("url=" + "https%3A%2F%2Fexample.adobeconnect.com%2Fmeeting12345678%2F")
 	req := httptest.NewRequest(http.MethodPost, "/api/tasks", form)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("HX-Request", "true")
@@ -172,7 +172,7 @@ func TestPostFormAccepted(t *testing.T) {
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("want 202, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "p15rdeovw4ge") || !strings.Contains(body, "alert-success") {
+	if body := rec.Body.String(); !strings.Contains(body, "meeting12345678") || !strings.Contains(body, "alert-success") {
 		t.Fatalf("form response missing success alert/task: %.200s", body)
 	}
 }
@@ -195,7 +195,7 @@ func TestPostFormInvalidShowsAlert(t *testing.T) {
 
 func TestDashboardPartial(t *testing.T) {
 	st := newFake()
-	if _, _, err := st.Enqueue("https://example.adobeconnect.com/p15rdeovw4ge/", "p15rdeovw4ge"); err != nil {
+	if _, _, err := st.Enqueue("https://example.adobeconnect.com/meeting12345678/", "meeting12345678"); err != nil {
 		t.Fatal(err)
 	}
 	h := New(st)
@@ -204,14 +204,14 @@ func TestDashboardPartial(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "<table") || !strings.Contains(body, "p15rdeovw4ge") {
+	if body := rec.Body.String(); !strings.Contains(body, "<table") || !strings.Contains(body, "meeting12345678") {
 		t.Fatalf("partial missing table/task: %.200s", body)
 	}
 }
 
 func TestStatusPageHasTable(t *testing.T) {
 	st := newFake()
-	if _, _, err := st.Enqueue("https://example.adobeconnect.com/p15rdeovw4ge/", "p15rdeovw4ge"); err != nil {
+	if _, _, err := st.Enqueue("https://example.adobeconnect.com/meeting12345678/", "meeting12345678"); err != nil {
 		t.Fatal(err)
 	}
 	h := New(st)
@@ -221,7 +221,7 @@ func TestStatusPageHasTable(t *testing.T) {
 		t.Fatalf("want 200, got %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"<table", "p15rdeovw4ge", "<form", `name="url"`, "react", "tailwindcss", "daisyui", "Task Details Modal", "navigator.clipboard"} {
+	for _, want := range []string{"<table", "meeting12345678", "<form", `name="url"`, "react", "tailwindcss", "daisyui", "Task Details Modal", "navigator.clipboard"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("status page missing %q: %.200s", want, body)
 		}
@@ -252,7 +252,7 @@ func TestRecName(t *testing.T) {
 			RecordingID: "abc123",
 			ReportJSON:  `{"video":"C:\\out\\Group\\Name_2\\recording.mp4"}`,
 		}, "Name_2"},
-		{"not yet processed", Task{RecordingID: "p15rdeovw4ge", Stage: "download 50% (1.0/2.0 MB)"}, "p15rdeovw4ge"},
+		{"not yet processed", Task{RecordingID: "meeting12345678", Stage: "download 50% (1.0/2.0 MB)"}, "meeting12345678"},
 		{"no folder in path", Task{RecordingID: "abc123", ReportJSON: `{"video":"recording.mp4"}`}, "abc123"},
 		{"bare id fallback", Task{ID: "task-1"}, "task-1"},
 	}
@@ -265,7 +265,7 @@ func TestRecName(t *testing.T) {
 
 func TestDeleteTask(t *testing.T) {
 	st := newFake()
-	task, _, err := st.Enqueue("https://example.adobeconnect.com/p15rdeovw4ge/", "p15rdeovw4ge")
+	task, _, err := st.Enqueue("https://example.adobeconnect.com/meeting12345678/", "meeting12345678")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func TestSSEEvents(t *testing.T) {
 
 func TestDashboardShowsStage(t *testing.T) {
 	st := newFake()
-	task, _, _ := st.Enqueue("https://example.adobeconnect.com/p15rdeovw4ge/", "p15rdeovw4ge")
+	task, _, _ := st.Enqueue("https://example.adobeconnect.com/meeting12345678/", "meeting12345678")
 	st.tasks[0].Stage = "reconstructing 42%"
 	st.byID[task.ID] = st.tasks[0]
 	h := New(st)

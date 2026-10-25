@@ -6,12 +6,12 @@ func TestParse(t *testing.T) {
 	cases := []struct {
 		in, id, zip string
 	}{
-		{"https://webinar5.um.ac.ir/p15rdeovw4ge/", "p15rdeovw4ge",
-			"https://webinar5.um.ac.ir/p15rdeovw4ge/output/p15rdeovw4ge.zip?download=zip"},
-		{"https://webinar5.um.ac.ir/p15rdeovw4ge", "p15rdeovw4ge",
-			"https://webinar5.um.ac.ir/p15rdeovw4ge/output/p15rdeovw4ge.zip?download=zip"},
-		{"webinar5.um.ac.ir/p15rdeovw4ge/?session=abc", "p15rdeovw4ge",
-			"https://webinar5.um.ac.ir/p15rdeovw4ge/output/p15rdeovw4ge.zip?download=zip"},
+		{"https://connect.example.com/meeting12345678/", "meeting12345678",
+			"https://connect.example.com/meeting12345678/output/meeting12345678.zip?download=zip"},
+		{"https://connect.example.com/meeting12345678", "meeting12345678",
+			"https://connect.example.com/meeting12345678/output/meeting12345678.zip?download=zip"},
+		{"connect.example.com/meeting12345678/?session=abc", "meeting12345678",
+			"https://connect.example.com/meeting12345678/output/meeting12345678.zip?download=zip"},
 		{"http://localhost:8500/my-meeting/", "my-meeting",
 			"http://localhost:8500/my-meeting/output/my-meeting.zip?download=zip"},
 	}

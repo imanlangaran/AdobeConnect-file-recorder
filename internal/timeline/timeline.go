@@ -1,7 +1,7 @@
 // Package timeline parses the mainstream.xml master timeline from an
 // Adobe Connect Standard AV recording archive.
 //
-// Format (verified against a real archive from webinar5.um.ac.ir):
+// Format (verified against real Adobe Connect archives):
 //
 //	<Message time="2672159" type="data">
 //	  <Method>playEvent</Method>

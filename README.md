@@ -29,13 +29,13 @@ go test ./...
 
 ```sh
 # Full pipeline: download archive + reconstruct
-bin/ac-rec download 'https://webinar5.um.ac.ir/p15rdeovw4ge/' --session '<BREEZESESSION>'
+bin/ac-rec download 'https://connect.example.com/meeting12345678/' --session '<BREEZESESSION>'
 
 # Same, logging in with credentials from a .env file (no --session needed)
-bin/ac-rec download 'https://webinar5.um.ac.ir/p15rdeovw4ge/'
+bin/ac-rec download 'https://connect.example.com/meeting12345678/'
 
 # Offline: reconstruct from an already-downloaded ZIP
-bin/ac-rec reconstruct ~/Downloads/p15rdeovw4ge.zip
+bin/ac-rec reconstruct ~/Downloads/meeting12345678.zip
 ```
 
 Get the session cookie: log in with your browser → DevTools → Network →
@@ -103,7 +103,7 @@ bin/ac-rec serve [--env .env]
 
 curl -X POST localhost:8080/api/tasks \
   -H 'Content-Type: application/json' \
-  -d '{"url":"https://webinar5.um.ac.ir/p15rdeovw4ge/"}'
+  -d '{"url":"https://connect.example.com/meeting12345678/"}'
 ```
 
 Open `http://localhost:8080/` for the status page; `GET /api/tasks` and

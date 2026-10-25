@@ -7,7 +7,7 @@ Target language: Go. Repository: `AdobeConnect-file-recorder` (currently **empty
 
 | Question | Answer |
 |---|---|
-| Example recording URL | `https://webinar5.um.ac.ir/p15rdeovw4ge/` — custom-domain deployment (likely on-prem Adobe Connect; exact hosting to be confirmed by E1) |
+| Example recording URL | `https://connect.example.com/meeting12345678/` — custom-domain deployment (likely on-prem Adobe Connect; exact hosting to be confirmed by E1) |
 | Login | Simple username/password form (no SSO redirect) |
 | Desired output | MP4; captions **embedded in the MP4** *(interpretation of "mp4" — to be confirmed; if sidecar `.vtt` is acceptable the embed step becomes optional behind one flag)* |
 | Recording duration | 60–120 min (≈0.5–2 GB per recording at typical bitrates) |
@@ -202,7 +202,7 @@ Flow: drive a real browser to play the recording; capture the `<video>` element'
 
 ## 6. Recommended Approach and Rationale
 
-> **UPDATE after E1 probe (2026-10-12):** the live netlog experiment (§3/§16) proved the target instance (`webinar5.um.ac.ir`) serves a **Standard AV** recording: VP6-over-WASM decode, content streamed via WebSocket `wss://…:1443/`, **no MP4 rendition exists**. Therefore, **for this instance the primary track is Approach B (raw ZIP/FLV download + FFmpeg reconstruction)**, and the Phase 1 MVP is re-scoped accordingly (B-specific detail: §5 table, C# reference pipeline in §3.5.2 is the proven model). Approach A is retained as the fast path for any Enhanced-AV instance and as the pattern for the `resolve`/`download` packages. The rest of this section explains why A was preferred *when an MP4 exists* — which is no longer the case here.
+> **UPDATE after E1 probe (2026-10-12):** the live netlog experiment (§3/§16) proved the target instance (`connect.example.com`) serves a **Standard AV** recording: VP6-over-WASM decode, content streamed via WebSocket `wss://…:1443/`, **no MP4 rendition exists**. Therefore, **for this instance the primary track is Approach B (raw ZIP/FLV download + FFmpeg reconstruction)**, and the Phase 1 MVP is re-scoped accordingly (B-specific detail: §5 table, C# reference pipeline in §3.5.2 is the proven model). Approach A is retained as the fast path for any Enhanced-AV instance and as the pattern for the `resolve`/`download` packages. The rest of this section explains why A was preferred *when an MP4 exists* — which is no longer the case here.
 
 **Original recommendation (for Enhanced-AV targets): Approach A as the MVP core, with the raw-ZIP sidecar pipeline (metadata/chat/captions/documents) alongside it; B and C behind fallback criteria.**
 
@@ -437,20 +437,20 @@ Layers (all deterministic unless noted; **no live Adobe Connect in CI**):
 
 ## 15. Phased Implementation Roadmap
 
-**Phase 0 — Feasibility experiments (½ day, before any feature code).** Manual, scripted-by-hand (`curl` + browser DevTools/HAR) against a real recording on `https://webinar5.um.ac.ir/` (E1–E4 in §16). Deliverable: filled experiment log + **architecture decision: A (MP4) vs B (reconstruction)**. Given the user's report that the recordings are very old with no download option, this phase is the project's decisive gate:
+**Phase 0 — Feasibility experiments (½ day, before any feature code).** Manual, scripted-by-hand (`curl` + browser DevTools/HAR) against a real recording on `https://connect.example.com/` (E1–E4 in §16). Deliverable: filled experiment log + **architecture decision: A (MP4) vs B (reconstruction)**. Given the user's report that the recordings are very old with no download option, this phase is the project's decisive gate:
 - E1 shows the player fetching an **MP4** → proceed to Phase 1 as written.
 - E1 shows the player fetching **FLV/XML chunks** (Standard AV confirmed) → **re-scope Phase 1**: the ZIP/asset pipeline (1d) and a new FFmpeg-based reconstruction core become the MVP; direct MP4 download is dropped to a secondary nicety. Budget an extra spike day for the reconstruction spec before coding.
 
 **Phase 1 — Bootstrap + MVP core (re-scoped for Approach B; depends on Phase 0 decision — now decided: B for this instance).**
 - 1a: repo bootstrap — `go.mod`, `cmd/ac-rec`, `internal/cli` skeleton, CI (test+lint+govulncheck), Makefile.
-- 1b: `recordingurl`, `session` (login-form/cookie auth for `webinar5.um.ac.ir`), ZIP URL derivation (`/output/<id>/output/<id>.zip?download=zip` pattern from E3) + tests.
+- 1b: `recordingurl`, `session` (login-form/cookie auth for `connect.example.com`), ZIP URL derivation (`/output/<id>/output/<id>.zip?download=zip` pattern from E3) + tests.
 - 1c: `download` (stream, validate `PK` magic, retry, progress, cancel, 284 MB-class files) + tests.
 - 1d: `assets` — safe ZIP extraction; parse `mainstream.xml` stream timeline (`streamRemoved`/`startTime`/`streamName` events → per-FLV start/end); inventory FLV chunks vs timeline; sidecars (chat from `transcriptstream.xml`, attendee map from `indexstream.xml`, links/docs if present) + tests with synthetic fixtures.
 - 1f: `reconstruct` (new, MVP-critical) — FFmpeg orchestration per the proven C# pipeline: per-stream concat of FLV chunks, gap-filling with still frames, audio mux, single output MP4 (screen-share video + audio; webcam optional). Mux/re-encode only where unavoidable (FLV/VP6 → H.264 **is** a re-encode — inherent to this format); honest fidelity report (one presenter, no whiteboard-as-video).
 - 1e: `export` + `engine` wiring + E2E hermetic suite + docs (README, usage).
-- **Exit criteria:** MVP acceptance (§14, adapted for B) on the real `webinar5.um.ac.ir` recording: reconstructed MP4 plays offline with audio synced to screen-share video across the full 60–120 min; chat log + metadata sidecars produced.
+- **Exit criteria:** MVP acceptance (§14, adapted for B) on the real `connect.example.com` recording: reconstructed MP4 plays offline with audio synced to screen-share video across the full 60–120 min; chat log + metadata sidecars produced.
 
-> **IMPLEMENTED (2026-10-12):** Phase 1 + Phase 3 core are built and accepted against the real `p15rdeovw4ge` recording (82.6 min, 284 MB ZIP → H.264/AAC MP4 with chat/attendee sidecars; stdlib-only, `internal/{recordingurl,download,assets,timeline,reconstruct,engine,cli}`). Beyond the original MVP scope, output defaults to a **1280×720 layout composition** (content left, burned-in attendee list + time-synced chat replay in a right sidebar via ASS subtitles — the archive does not carry exact pod-position events, so the layout is approximated) and an optional **MP3 export** (`--mp3`); `--raw` restores full-frame source-resolution output. Remaining Phase 2/3 items (programmatic login, resume, batch input) are unimplemented by choice — see README "Skipped for now".
+> **IMPLEMENTED (2026-10-12):** Phase 1 + Phase 3 core are built and accepted against the real `meeting12345678` recording (82.6 min, 284 MB ZIP → H.264/AAC MP4 with chat/attendee sidecars; stdlib-only, `internal/{recordingurl,download,assets,timeline,reconstruct,engine,cli}`). Beyond the original MVP scope, output defaults to a **1280×720 layout composition** (content left, burned-in attendee list + time-synced chat replay in a right sidebar via ASS subtitles — the archive does not carry exact pod-position events, so the layout is approximated) and an optional **MP3 export** (`--mp3`); `--raw` restores full-frame source-resolution output. Remaining Phase 2/3 items (programmatic login, resume, batch input) are unimplemented by choice — see README "Skipped for now".
 
 **Phase 2 — Auth & resilience polish (depends on 1).** Programmatic direct login (`--username` + prompted password, form/XML-API login — confirmed simple username/password, no SSO); signed-URL auto-refresh hardening; byte-resume if E4 supported; batch URL file input. CDP browser-harvest helper demoted to an SSO-fallback contingency (not built unless needed).
 
@@ -473,9 +473,9 @@ Dependencies: 0→1→2 hard; 3 and 4 conditional and independent of each other.
 | SSO friction | Med | Phase 2 browser-assisted cookies; cookie-file already works |
 | Legal/ToS sensitivity of downloading | Low | Personal-use, permission-respecting scope stated in README; no bypass features |
 
-**Assumptions (label)** — A: user's recordings are Enhanced AV/MP4 **[assumption until E1 — webinar5.um.ac.ir runs a recent-enough Connect, but must be verified]**; B: viewer session (login cookie) suffices for `/output/*.zip` **[verified for reference users, needs E3 on target instance]**; C: direct programmatic login is feasible (plain username/password, no SSO) **[user-confirmed login form; E2b verifies the exact login endpoint]**.
+**Assumptions (label)** — A: user's recordings are Enhanced AV/MP4 **[assumption until E1 — connect.example.com runs a recent-enough Connect, but must be verified]**; B: viewer session (login cookie) suffices for `/output/*.zip` **[verified for reference users, needs E3 on target instance]**; C: direct programmatic login is feasible (plain username/password, no SSO) **[user-confirmed login form; E2b verifies the exact login endpoint]**.
 
-**Open questions (answered by user 2026-10-12)** — Q1: custom-domain deployment, example `https://webinar5.um.ac.ir/p15rdeovw4ge/` (on-prem vs Adobe-hosted with custom domain → confirm in E1). Q2: plain username/password, no SSO. Q3: MP4 output, captions embedded. Q4: 60–120 min recordings (≈0.5–2 GB) — no global download deadline, idle-watchdog only; pre-flight disk check when `Content-Length` known. Q6: output named from the page `<title>`.
+**Open questions (answered by user 2026-10-12)** — Q1: custom-domain deployment, example `https://connect.example.com/meeting12345678/` (on-prem vs Adobe-hosted with custom domain → confirm in E1). Q2: plain username/password, no SSO. Q3: MP4 output, captions embedded. Q4: 60–120 min recordings (≈0.5–2 GB) — no global download deadline, idle-watchdog only; pre-flight disk check when `Content-Length` known. Q6: output named from the page `<title>`.
 
 **Q5 — answered by user 2026-10-12 (second round):** recordings are **"so old, no download option at all."** Interpretation:
 
@@ -488,12 +488,12 @@ Dependencies: 0→1→2 hard; 3 and 4 conditional and independent of each other.
 
 **Validation experiments (run in Phase 0)**
 
-- **E1 (page probe) — DONE (user session + Chrome netlog capture, 2026-10-12, 48 MB log analyzed). Verified findings on `webinar5.um.ac.ir/p15rdeovw4ge/` (sco-id 223446):**
-  1. The "4 dummy files" are `https://webinar5.um.ac.ir/common/assets/dummyVideo.mp4` and `dummyAudio.mp3` — **static player scaffolding assets**, not recording content. (User observation explained.)
+- **E1 (page probe) — DONE (user session + Chrome netlog capture, 2026-10-12, 48 MB log analyzed). Verified findings on `connect.example.com/meeting12345678/` (sco-id 123456):**
+  1. The "4 dummy files" are `https://connect.example.com/common/assets/dummyVideo.mp4` and `dummyAudio.mp3` — **static player scaffolding assets**, not recording content. (User observation explained.)
   2. The player loads **`/common/meetinghtml/vp6.wasm` + `AudioCodecs.wasm`** — WASM implementations of the **VP6 video codec** and legacy audio codecs. The browser decodes recording content client-side. This is the signature of a **Standard AV (FLV-era) recording** replayed through the modern HTML5 player. **[V]**
-  3. Playback traffic goes over a **WebSocket `wss://webinar5.um.ac.ir:1443/`** (plus `/healthCheck` on the same port), launched via `/servlet/verify?sco-id=223446&…` and `/api/xml?action=sco-info&sco-id=223446`. Recording data is **server-pushed as encoded chunks over the WebSocket** — there is **no MP4 rendition being fetched, and none exists to download**. **[V]**
-  4. **Decision per §5/§6 fallback criteria: Approach A (direct MP4) is dead for this instance. Approach B (raw asset download + reconstruction) is promoted to the primary track** for `webinar5.um.ac.ir`. (Approach A remains documented for any newer Enhanced-AV instance the user may encounter.)
-- **E3 (ZIP probe) — DONE (user, 2026-10-12):** `https://webinar5.um.ac.ir/p15rdeovw4ge/output/p15rdeovw4ge.zip?download=zip` **downloads a 284 MB ZIP (297,666,143 bytes)** with a normal logged-in browser session. **[V]**
+  3. Playback traffic goes over a **WebSocket `wss://connect.example.com:1443/`** (plus `/healthCheck` on the same port), launched via `/servlet/verify?sco-id=123456&…` and `/api/xml?action=sco-info&sco-id=123456`. Recording data is **server-pushed as encoded chunks over the WebSocket** — there is **no MP4 rendition being fetched, and none exists to download**. **[V]**
+  4. **Decision per §5/§6 fallback criteria: Approach A (direct MP4) is dead for this instance. Approach B (raw asset download + reconstruction) is promoted to the primary track** for `connect.example.com`. (Approach A remains documented for any newer Enhanced-AV instance the user may encounter.)
+- **E3 (ZIP probe) — DONE (user, 2026-10-12):** `https://connect.example.com/meeting12345678/output/meeting12345678.zip?download=zip` **downloads a 284 MB ZIP (297,666,143 bytes)** with a normal logged-in browser session. **[V]**
   - **Verified ZIP manifest (real fixture, inspected via `unzip -l` + content spot-checks):**
     | File(s) | Size | Role |
     |---|---|---|
@@ -506,8 +506,8 @@ Dependencies: 0→1→2 hard; 3 and 4 conditional and independent of each other.
     | `sco_metadata.xml`, `document-metadata.xml`, `telephony-files.xml` | small | Recording metadata |
     | *(no `.vtt` present)* | | This recording has **no captions** — caption pipeline becomes best-effort for B |
   - Reconstruction inputs are fully confirmed; `ffmpeg`/`ffprobe` are already installed on the dev machine **[V]** (`/usr/bin/ffmpeg`). VP6 decode is supported by ffmpeg. Phase 0 is complete — all four experiments (E1, E2-class auth via browser session, E3; E4 partially) resolved in favor of **Approach B**.
-- **E2 (direct download):** with your login cookies from the browser, `curl -L -b <cookies> -o test.mp4 "https://webinar5.um.ac.ir/p15rdeovw4ge/?download=true&name=test.mp4"` (official pattern) **and** the discovered CDN MP4 URL. Verify playable output (ffprobe/vlc) and whether plain view permission suffices. *Determines which URL strategy the resolver prefers.*
-- **E2b (login probe):** capture the login form POST in DevTools (or try `curl "https://webinar5.um.ac.ir/api/xml?action=login&username=USER&password=PASS"`); record the endpoint, redirect behavior, and which cookies result. *Determines the Phase 2 programmatic-login implementation.*
+- **E2 (direct download):** with your login cookies from the browser, `curl -L -b <cookies> -o test.mp4 "https://connect.example.com/meeting12345678/?download=true&name=test.mp4"` (official pattern) **and** the discovered CDN MP4 URL. Verify playable output (ffprobe/vlc) and whether plain view permission suffices. *Determines which URL strategy the resolver prefers.*
+- **E2b (login probe):** capture the login form POST in DevTools (or try `curl "https://connect.example.com/api/xml?action=login&username=USER&password=PASS"`); record the endpoint, redirect behavior, and which cookies result. *Determines the Phase 2 programmatic-login implementation.*
 - **E3 (ZIP probe):** `curl -b … "<recording-url>/output/<id>.zip?download=zip" -o raw.zip`; list contents; check for `mainstream.xml`/`indexstream.xml`/`transcriptstream.xml`/`*.vtt`/FLVs; note absence/presence of MP4-relevant files. *Determines sidecar pipeline inputs and Phase-3 feasibility.*
 - **E4 (transport probe):** HEAD/Range request on the CDN MP4 URL (`Range: bytes=0-0`) → check `206`/`Accept-Ranges`, `Content-Length`, ETag stability; re-use the same signed URL twice to observe expiry/single-use semantics. *Determines resume design and refresh urgency.*
 
