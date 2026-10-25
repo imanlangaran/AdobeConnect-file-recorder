@@ -436,6 +436,10 @@ var pageTmpl = template.Must(template.New("page").Funcs(template.FuncMap{
 	"total":   total,
 	"ftime":   ftime,
 	"recName": recName,
+	"json": func(v any) template.JS {
+		b, _ := json.Marshal(v)
+		return template.JS(b)
+	},
 }).Parse(pageShell))
 
 // dashFragment is the live region polled by htmx every 3s: status cards,

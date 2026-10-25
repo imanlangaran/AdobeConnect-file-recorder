@@ -11,7 +11,8 @@
   <script src="https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.umd.js"></script>
   <script>
     // Apply saved theme immediately before render to avoid flash
-    const savedTheme = localStorage.getItem('ac-theme') || 'night';
+    const urlTheme = new URLSearchParams(window.location.search).get('theme');
+    const savedTheme = urlTheme || localStorage.getItem('ac-theme') || 'night';
     document.documentElement.setAttribute('data-theme', savedTheme);
   </script>
 </head>
@@ -60,6 +61,7 @@
 </div>
 
 <script id="worker-limits" type="application/json">{"download":{{.MaxDownloadWorkers}},"reconstruct":{{.MaxReconstructWorkers}}}</script>
+<script id="initial-tasks" type="application/json">{{json .Tasks}}</script>
 <script>
 (function() {
   const { useState, useEffect, useMemo, useCallback } = React;
@@ -412,8 +414,18 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
   }
 
   function App() {
-    const [theme, setTheme] = useState(() => localStorage.getItem('ac-theme') || 'night');
-    const [tasks, setTasks] = useState([]);
+    const [theme, setTheme] = useState(() => {
+      const u = new URLSearchParams(window.location.search).get('theme');
+      return u || localStorage.getItem('ac-theme') || 'night';
+    });
+    const defaultTasks = (() => {
+      try {
+        const el = document.getElementById('initial-tasks');
+        if (el) return JSON.parse(el.textContent) || [];
+      } catch (e) {}
+      return [];
+    })();
+    const [tasks, setTasks] = useState(defaultTasks);
     const defaultLimits = (() => {
       try {
         const el = document.getElementById('worker-limits');
@@ -431,8 +443,10 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
     const [formMsg, setFormMsg] = useState(null);
     const [deleteTarget, setDeleteTarget] = useState(null);
     const [deleting, setDeleting] = useState(false);
-    const [connState, setConnState] = useState('connecting');
-    const [taskModalId, setTaskModalId] = useState(null);
+    const [connState, setConnState] = useState('connected');
+    const [taskModalId, setTaskModalId] = useState(() => {
+      return new URLSearchParams(window.location.search).get('modal') || null;
+    });
     const [collapsedGroups, setCollapsedGroups] = useState(() => new Set());
 
     const toggleGroup = (key) => setCollapsedGroups(prev => {
@@ -474,9 +488,10 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
     useEffect(() => {
       let es = null;
       let reconnectTimer = null;
-      function connect() {
-        setConnState('connecting');
+      function connect(isReconnect) {
+        if (isReconnect) setConnState('connecting');
         es = new EventSource('/api/events');
+        es.onopen = () => setConnState('connected');
         es.addEventListener('ping', () => setConnState('connected'));
         es.addEventListener('update', () => {
           setConnState('connected');
@@ -485,10 +500,10 @@ ${report ? JSON.stringify(report, null, 2) : task.reportJSON}
         es.onerror = () => {
           setConnState('disconnected');
           es.close();
-          reconnectTimer = setTimeout(connect, 3000);
+          reconnectTimer = setTimeout(() => connect(true), 3000);
         };
       }
-      connect();
+      connect(false);
       loadTasks();
       loadInfo();
       return () => {
